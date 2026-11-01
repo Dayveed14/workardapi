@@ -7,13 +7,7 @@ export const pool = mysql.createPool({
   user: env.db.user,
   password: env.db.password,
   database: env.db.database,
-  ssl: env.db.ssl
-  ? {
-      minVersion: 'TLSv1.2',
-      rejectUnauthorized: true,
-      ...(env.db.sslCa ? { ca: env.db.sslCa } : {}),
-    }
-  : undefined,
+  ssl: env.db.ssl ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined,
   waitForConnections: true,
   connectionLimit: 10,
   dateStrings: true, // dates come back as plain strings, e.g. "2026-11-02 08:05:00"

@@ -9,7 +9,7 @@ import { paystackWebhook } from './controllers/payrollController.js';
 
 const app = express();
 
-app.set('trust proxy', 1); // behind Render/Vercel: real client IP (needed for office Wi-Fi checks)
+app.set('trust proxy', env.trustProxy); // real client IP (office Wi-Fi checks, rate limits) — see TRUST_PROXY in .env.example
 app.use(helmet());
 app.use(
   cors({
