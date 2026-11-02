@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { uploadDocument } from '../middleware/upload.js';
 import * as financeController from '../controllers/financeController.js';
@@ -12,7 +12,7 @@ import {
 } from '../validators/financeSchemas.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, requireFeature('finance')); // only on plans that include finance
 
 const view = requirePermission('finance.view');
 const manage = requirePermission('finance.manage');

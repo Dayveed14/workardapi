@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { uploadDocument } from '../middleware/upload.js';
 import * as taskController from '../controllers/taskController.js';
@@ -17,7 +17,7 @@ import {
 // Everyone can use tasks for themselves, so there is no blanket permission here.
 // Who may see / change each task is checked in taskService (assignee, creator, scope, manager).
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, requireFeature('tasks')); // only on plans that include tasks
 
 // Fixed paths first (before "/:id")
 router.get('/', validate(listTasksSchema, 'query'), taskController.list);

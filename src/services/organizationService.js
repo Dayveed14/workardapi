@@ -1,5 +1,6 @@
 import { DEFAULT_ROLES, DEFAULT_LEAVE_TYPES, DEFAULT_FINANCE_CATEGORIES } from '../config/permissions.js';
 import * as reviewModel from '../models/reviewModel.js';
+import * as onboardingModel from '../models/onboardingModel.js';
 import * as invoiceModel from '../models/invoiceModel.js';
 import * as financeModel from '../models/financeModel.js';
 import * as organizationModel from '../models/organizationModel.js';
@@ -11,6 +12,7 @@ import * as leaveModel from '../models/leaveModel.js';
 import * as employeeModel from '../models/employeeModel.js';
 import * as auditModel from '../models/auditModel.js';
 import AppError from '../utils/AppError.js';
+import { checkCanAddBranch } from './planLimitService.js';
 
 // Called once when a company signs up: default roles, leave types and a first branch.
 export async function seedOrganization(orgId, db) {
@@ -33,6 +35,7 @@ export async function seedOrganization(orgId, db) {
   }
   // Phase 3B: review settings + default review criteria
   await reviewModel.ensureDefaults(orgId, db);
+  await onboardingModel.ensureDefaults(orgId, db); // two starter onboarding checklists
   const branchId = await branchModel.create(orgId, { name: 'Head Office', clockInPolicy: 'none' }, db);
   return { ownerRoleId, branchId };
 }
@@ -69,6 +72,7 @@ export async function getStructure(orgId) {
 
 // ---------- Branches ----------
 export async function createBranch(auth, data) {
+  await checkCanAddBranch(auth); // plan limit
   const id = await branchModel.create(auth.orgId, data);
   await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'branch.created', entityType: 'branch', entityId: id, details: data.name });
   return branchModel.findById(auth.orgId, id);

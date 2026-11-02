@@ -7,6 +7,7 @@ import AppError from '../utils/AppError.js';
 // their role, permissions and employee record. Result is put on req.auth:
 //
 // req.auth = {
+//   subscription: { plan, status, usable, features, limits, ... }  (see utils/subscription.js)
 //   userId, userName, orgId, role: { id, name, isOwner },
 //   permissions: { 'employees.view': 'team', ... },
 //   employee: { id, branchId, departmentId, teamId } | null
@@ -28,6 +29,18 @@ export async function requireAuth(req, res, next) {
     if (!context) throw new AppError(401, 'Your access to this organisation has ended');
 
     req.auth = context;
+
+    // Unpaid or expired plan: only sign-in and billing work until the owner pays
+    const allowed = ['/api/auth/', '/api/billing'].some((p) => req.originalUrl.startsWith(p));
+    if (!context.subscription.usable && !allowed) {
+      return res.status(402).json({
+        code: 'SUBSCRIPTION_REQUIRED',
+        message:
+          context.subscription.status === 'pending_payment'
+            ? 'Choose a plan and pay to start using Workard'
+            : 'Your Workard plan has expired. The owner needs to renew it.',
+      });
+    }
     next();
   } catch (err) {
     next(err);
@@ -52,5 +65,18 @@ export function requireAnyPermission(...keys) {
     const allowed = keys.some((k) => req.auth?.permissions?.[k]);
     if (!allowed) return next(new AppError(403, 'You do not have permission to do this'));
     next();
+  };
+}
+
+// Usage: router.use(requireAuth, requireFeature('payroll'))
+// Blocks parts of the app that the organisation's plan doesn't include.
+export function requireFeature(feature) {
+  return (req, res, next) => {
+    if (req.auth?.subscription?.features.includes(feature)) return next();
+    return res.status(403).json({
+      code: 'PLAN_UPGRADE_REQUIRED',
+      feature,
+      message: 'Your plan does not include this. Upgrade in Settings → Plan & billing.',
+    });
   };
 }

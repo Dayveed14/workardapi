@@ -4,6 +4,7 @@ import * as membershipModel from '../models/membershipModel.js';
 import * as employeeModel from '../models/employeeModel.js';
 import * as auditModel from '../models/auditModel.js';
 import AppError from '../utils/AppError.js';
+import { checkCanCreateRole } from './planLimitService.js';
 
 export function getCatalog() {
   return { permissions: PERMISSIONS, scopes: SCOPES };
@@ -25,6 +26,7 @@ function cleanPermissions(input) {
 }
 
 export async function createRole(auth, { name, description, permissions }) {
+  checkCanCreateRole(auth); // Enterprise only
   if (await roleModel.findByName(auth.orgId, name)) {
     throw new AppError(409, 'A role with this name already exists', { name: 'Name already used' });
   }

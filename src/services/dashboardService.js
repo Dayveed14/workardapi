@@ -51,16 +51,18 @@ export async function getDashboard(auth, scope) {
     recentClockIns,
     upcomingLeave,
     // Phase 2 blocks — only included if the person may see them
-    money: await moneyBlock(auth, today),
-    customers: await customerBlock(auth, today),
-    // Phase 3B — everyone has their own tasks & reviews
-    tasks: await getTaskCounts(auth),
-    reviews: await countReviewsWaiting(auth),
+    // Each block only appears if the plan includes it (and the person may see it)
+    money: has(auth, 'finance') || has(auth, 'invoices') ? await moneyBlock(auth, today) : null,
+    customers: has(auth, 'crm') ? await customerBlock(auth, today) : null,
+    tasks: has(auth, 'tasks') ? await getTaskCounts(auth) : null,
+    reviews: has(auth, 'reviews') ? await countReviewsWaiting(auth) : null,
   };
 }
 
+const has = (auth, feature) => auth.subscription.features.includes(feature);
+
 async function moneyBlock(auth, today) {
-  if (auth.permissions['finance.view']) {
+  if (auth.permissions['finance.view'] && has(auth, 'finance')) {
     const s = await getSummary(auth.orgId, today.slice(0, 7));
     return {
       revenueKobo: s.revenueKobo,

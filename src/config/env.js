@@ -97,6 +97,10 @@ export const env = Object.freeze({
   // Phase 3B — daily task jobs
   cronSecret: requiredInProd('CRON_SECRET'),
 
+  // Plans & billing — WORKARD'S OWN Paystack secret key (organisations pay their yearly plan into it).
+  // Not the same as the keys businesses add for payroll.
+  billingPaystackKey: str('PAYSTACK_SECRET_KEY'), // empty → plan payments show "not set up yet" (the API still starts)
+
   cloudinary: Object.freeze({
     cloudName: str('CLOUDINARY_CLOUD_NAME'),
     apiKey: str('CLOUDINARY_API_KEY'),

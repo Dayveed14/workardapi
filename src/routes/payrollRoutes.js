@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as payrollController from '../controllers/payrollController.js';
 import {
@@ -12,7 +12,7 @@ import {
 } from '../validators/payrollSchemas.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, requireFeature('payroll')); // only on plans that include payroll
 
 const view = requirePermission('payroll.view');
 const manage = requirePermission('payroll.manage');

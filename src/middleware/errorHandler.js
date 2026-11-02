@@ -21,5 +21,6 @@ export function errorHandler(err, req, res, next) {
   res.status(status).json({
     message: status >= 500 && env.isProd ? 'Something went wrong' : err.message,
     ...(err.errors ? { errors: err.errors } : {}),
+    ...(err.appCode ? { code: err.appCode } : {}),
   });
 }

@@ -10,6 +10,7 @@ import { uploadFile, deleteFile } from './uploadService.js';
 import { scopeCondition } from '../utils/scope.js';
 import { toDateString } from '../utils/dates.js';
 import AppError from '../utils/AppError.js';
+import { checkCanAddEmployee } from './planLimitService.js';
 
 // Makes sure branch/department/team/manager ids belong to THIS organisation
 async function checkReferences(orgId, data) {
@@ -41,6 +42,7 @@ export async function createEmployee(auth, data) {
     throw new AppError(409, 'An employee with this email already exists', { email: 'Email already used in this organisation' });
   }
   await checkReferences(auth.orgId, data);
+  await checkCanAddEmployee(auth); // plan limit (Starter: 10 staff)
 
   const id = await employeeModel.create(auth.orgId, data);
   await auditModel.log({

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as reviewController from '../controllers/reviewController.js';
 import {
@@ -15,7 +15,7 @@ import {
 // Everyone has their OWN reviews, so most routes need only a login.
 // Who may see / write each review is checked in reviewService (scopes + direct manager).
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, requireFeature('reviews')); // only on plans that include reviews
 
 // Fixed paths first (before "/:id")
 router.get('/settings', reviewController.getSettings);

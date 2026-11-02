@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { uploadDocument, uploadImage } from '../middleware/upload.js';
 import * as employeeController from '../controllers/employeeController.js';
@@ -37,8 +37,8 @@ router.post('/:id/invite', requirePermission('employees.create'), validate(invit
 router.patch('/:id/role', requirePermission('roles.manage'), validate(assignRoleSchema), employeeController.assignRole);
 
 // Pay (Phase 3) — salary, bank & pension details
-router.get('/:id/pay', requirePermission('payroll.view'), payrollController.getEmployeePay);
-router.put('/:id/pay', requirePermission('payroll.manage'), validate(employeePaySchema), payrollController.saveEmployeePay);
+router.get('/:id/pay', requireFeature('payroll'), requirePermission('payroll.view'), payrollController.getEmployeePay);
+router.put('/:id/pay', requireFeature('payroll'), requirePermission('payroll.manage'), validate(employeePaySchema), payrollController.saveEmployeePay);
 
 // Documents
 router.get('/:id/documents', documentController.list);

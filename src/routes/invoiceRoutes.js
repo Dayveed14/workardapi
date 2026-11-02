@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as invoiceController from '../controllers/invoiceController.js';
 import {
@@ -12,7 +12,7 @@ import {
 } from '../validators/invoiceSchemas.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, requireFeature('invoices')); // only on plans that include invoices
 
 const view = requirePermission('invoices.view');
 const manage = requirePermission('invoices.manage');

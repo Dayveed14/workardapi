@@ -66,3 +66,24 @@ export function isValidSignature(rawBody, signature, secretKey) {
   const b = Buffer.from(String(signature));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+
+// ---------- Accepting a payment (used for Workard's own subscription billing) ----------
+// https://paystack.com/docs/payments/accept-payments/
+// Starts a payment and returns the Paystack checkout page to send the customer to.
+export async function initializeTransaction(secretKey, { email, amountKobo, reference, callbackUrl, metadata }) {
+  const data = await request(secretKey, 'POST', '/transaction/initialize', {
+    email,
+    amount: amountKobo,
+    currency: 'NGN',
+    reference,
+    callback_url: callbackUrl,
+    metadata,
+  });
+  return { authorizationUrl: data.authorization_url, reference: data.reference };
+}
+
+// Asks Paystack what happened to a payment. Never trust the browser's word for it.
+export async function verifyTransaction(secretKey, reference) {
+  const data = await request(secretKey, 'GET', `/transaction/verify/${encodeURIComponent(reference)}`);
+  return { status: data.status, amountKobo: Number(data.amount), currency: data.currency, paidAt: data.paid_at };
+}

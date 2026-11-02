@@ -17,6 +17,8 @@ import payrollRoutes from './payrollRoutes.js';
 import taskRoutes from './taskRoutes.js';
 import reviewRoutes from './reviewRoutes.js';
 import jobRoutes from './jobRoutes.js';
+import billingRoutes from './billingRoutes.js';
+import onboardingRoutes from './onboardingRoutes.js';
 
 // Every API route, in one place. All of these sit under /api
 const router = Router();
@@ -47,6 +49,10 @@ router.use('/payroll', payrollRoutes); //       salaries, payroll runs, payslips
 // Phase 3B
 router.use('/tasks', taskRoutes); //           tasks, checklists, comments, files, repeating tasks
 router.use('/reviews', reviewRoutes); //       performance reviews, criteria, review settings
-router.use('/jobs', jobRoutes); //             daily jobs trigger for an outside cron (CRON_SECRET)
+router.use('/jobs', jobRoutes);
+
+// Plans & onboarding
+router.use('/billing', billingRoutes); //       plans, paying the yearly subscription (Paystack)
+router.use('/onboarding', onboardingRoutes); // new-joiner checklists //             daily jobs trigger for an outside cron (CRON_SECRET)
 
 export default router;

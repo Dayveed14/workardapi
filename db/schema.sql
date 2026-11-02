@@ -732,3 +732,102 @@ CREATE TABLE IF NOT EXISTS review_scores (
   comment         VARCHAR(500) NULL,
   CONSTRAINT fk_score_review FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+-- ============================================================
+-- PLANS & BILLING — yearly subscription per organisation
+-- ============================================================
+
+-- One row per organisation. Organisations created before plans existed are
+-- "legacy": full access, no end date (npm run db:sync adds their row).
+CREATE TABLE IF NOT EXISTS subscriptions (
+  organization_id       BIGINT UNSIGNED PRIMARY KEY,
+  plan                  ENUM('starter','business','enterprise') NOT NULL,
+  status                ENUM('pending_payment','active') NOT NULL DEFAULT 'pending_payment',
+  current_period_start  DATE NULL,
+  current_period_end    DATE NULL,      -- last day of the paid year
+  is_legacy             TINYINT(1) NOT NULL DEFAULT 0,
+  created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_sub_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Every payment attempt to Workard (through WORKARD's own Paystack account)
+CREATE TABLE IF NOT EXISTS billing_payments (
+  id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id   BIGINT UNSIGNED NOT NULL,
+  reference         VARCHAR(64) NOT NULL,          -- sent to Paystack; one payment = one reference
+  plan              ENUM('starter','business','enterprise') NOT NULL,
+  kind              ENUM('new','renewal','upgrade') NOT NULL,
+  amount_kobo       BIGINT NOT NULL,
+  status            ENUM('initiated','paid','failed') NOT NULL DEFAULT 'initiated',
+  authorization_url VARCHAR(500) NULL,
+  period_start      DATE NULL,                     -- filled in when paid
+  period_end        DATE NULL,
+  paid_at           DATETIME NULL,
+  created_by        BIGINT UNSIGNED NULL,
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_billing_reference (reference),
+  KEY idx_billing_org (organization_id, created_at),
+  CONSTRAINT fk_billing_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- ONBOARDING — checklists for new joiners (and for HR)
+-- ============================================================
+
+-- A reusable checklist, e.g. "New employee" or "New manager"
+CREATE TABLE IF NOT EXISTS onboarding_templates (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  name             VARCHAR(120) NOT NULL,
+  description      VARCHAR(255) NULL,
+  suits            ENUM('everyone','staff','managers') NOT NULL DEFAULT 'everyone',
+  is_active        TINYINT(1) NOT NULL DEFAULT 1,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_obt_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- An item on a template. `owner` = who does it: the new joiner, or HR / the owner.
+CREATE TABLE IF NOT EXISTS onboarding_template_items (
+  id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  template_id  BIGINT UNSIGNED NOT NULL,
+  title        VARCHAR(200) NOT NULL,
+  description  VARCHAR(500) NULL,
+  owner        ENUM('new_joiner','hr') NOT NULL,
+  due_day      SMALLINT NOT NULL DEFAULT 0,       -- days after the start date (0 = first day)
+  sort_order   INT NOT NULL DEFAULT 0,
+  CONSTRAINT fk_obti_template FOREIGN KEY (template_id) REFERENCES onboarding_templates(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- One onboarding for one new joiner
+CREATE TABLE IF NOT EXISTS onboardings (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  employee_id      BIGINT UNSIGNED NOT NULL,
+  template_name    VARCHAR(120) NOT NULL,         -- copied, so renaming a template doesn't change history
+  start_date       DATE NOT NULL,
+  status           ENUM('in_progress','completed','cancelled') NOT NULL DEFAULT 'in_progress',
+  started_by       BIGINT UNSIGNED NULL,          -- user id (HR / owner)
+  completed_at     DATETIME NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- one live onboarding per person (NULL once finished or cancelled)
+  active_key       TINYINT NULL DEFAULT 1,
+  UNIQUE KEY uq_onboarding_active (employee_id, active_key),
+  KEY idx_onboarding_org (organization_id, status),
+  CONSTRAINT fk_ob_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ob_emp FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- The items copied from the template (plus any added for this person)
+CREATE TABLE IF NOT EXISTS onboarding_items (
+  id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  onboarding_id   BIGINT UNSIGNED NOT NULL,
+  title           VARCHAR(200) NOT NULL,
+  description     VARCHAR(500) NULL,
+  owner           ENUM('new_joiner','hr') NOT NULL,
+  due_date        DATE NULL,
+  sort_order      INT NOT NULL DEFAULT 0,
+  done_at         DATETIME NULL,
+  done_by         BIGINT UNSIGNED NULL,           -- user id
+  CONSTRAINT fk_obi_onboarding FOREIGN KEY (onboarding_id) REFERENCES onboardings(id) ON DELETE CASCADE
+) ENGINE=InnoDB;

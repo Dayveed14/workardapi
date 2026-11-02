@@ -164,3 +164,18 @@ export function reviewEmail({ firstName, businessName, period, stage, link }) {
       <p style="color:#64748b">${esc(businessName)}</p>`),
   };
 }
+
+export function onboardingEmail({ firstName, businessName, itemCount, hasLogin, link }) {
+  const next = hasLogin
+    ? 'Log in to see your checklist and tick things off as you go.'
+    : 'Accept your Workard invitation first (check your inbox), then you’ll see your checklist.';
+  return {
+    subject: `Welcome to ${businessName} — your onboarding checklist`,
+    text: `Hi ${firstName}, welcome to ${businessName}! You have ${itemCount} onboarding steps to complete. ${next} ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p>Welcome to <strong>${esc(businessName)}</strong>! We’ve prepared <strong>${itemCount} onboarding steps</strong> to help you settle in.</p>
+      <p>${next}</p>
+      ${button(link, 'Open my checklist')}`),
+  };
+}

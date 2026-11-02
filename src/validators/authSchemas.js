@@ -13,6 +13,7 @@ export const registerSchema = z.object({
   password,
   industry: optionalText(80),
   size: optionalText(20),
+  plan: z.enum(['starter', 'business', 'enterprise'], { errorMap: () => ({ message: 'Choose a plan' }) }),
 });
 
 export const loginSchema = z.object({

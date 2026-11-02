@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { requireAuth, requirePermission, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as customerController from '../controllers/customerController.js';
 import {
@@ -10,7 +10,7 @@ import {
 } from '../validators/crmSchemas.js';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, requireFeature('crm')); // only on plans that include crm
 
 const view = requirePermission('customers.view');
 const manage = requirePermission('customers.manage');

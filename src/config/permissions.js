@@ -61,6 +61,9 @@ export const PERMISSIONS = [
   { key: 'reviews.manage', module: 'Reviews', label: 'Start & write performance reviews', scoped: true },
   { key: 'reviews.setup', module: 'Reviews', label: 'Set review criteria & how often reviews happen', scoped: false },
 
+  // Onboarding — checklists for new joiners (every plan)
+  { key: 'onboarding.manage', module: 'Onboarding', label: 'Set up onboarding checklists & onboard new joiners', scoped: false },
+
   { key: 'organization.manage', module: 'Settings', label: 'Manage branches, departments, teams & leave types', scoped: false },
   { key: 'roles.manage', module: 'Settings', label: 'Manage roles & assign roles', scoped: false },
   { key: 'audit.view', module: 'Settings', label: 'View activity log', scoped: false },
@@ -100,6 +103,7 @@ export const DEFAULT_ROLES = [
       'reviews.view': 'all',
       'reviews.manage': 'all',
       'reviews.setup': 'all',
+      'onboarding.manage': 'all',
     },
   },
   {
@@ -182,6 +186,48 @@ export const DEFAULT_REVIEW_CRITERIA = [
   { name: 'Targets & results', description: 'Did they hit the goals agreed for this period?', weight: 30 },
   { name: 'Punctuality & attendance', description: 'On time, present, reliable', weight: 20 },
   { name: 'Teamwork & attitude', description: 'Helps others, communicates, takes ownership', weight: 20 },
+];
+
+// Two starter onboarding checklists. owner: who does it — the new joiner, or HR / the owner.
+// day: days after the start date it's due (0 = first day). Editable in Onboarding → Checklists.
+const EVERYONE_JOINER = [
+  { title: 'Accept your Workard invite and set your password', owner: 'new_joiner', day: 0 },
+  { title: 'Complete your profile: phone, address and emergency contact', owner: 'new_joiner', day: 1 },
+  { title: 'Upload your ID, passport photo and certificates', owner: 'new_joiner', day: 2, description: 'On your profile → Documents' },
+  { title: 'Clock in from the office once to test it', owner: 'new_joiner', day: 1 },
+  { title: 'Read the staff handbook and policies', owner: 'new_joiner', day: 3 },
+];
+const EVERYONE_HR = [
+  { title: 'Signed offer letter / contract on file', owner: 'hr', day: 0 },
+  { title: 'Create work email and accounts', owner: 'hr', day: 0 },
+  { title: 'Hold a welcome meeting', owner: 'hr', day: 1 },
+  { title: 'Issue ID card and work equipment', owner: 'hr', day: 3 },
+  { title: 'Add salary, bank and pension details for payroll', owner: 'hr', day: 5 },
+  { title: 'Check in after the first week', owner: 'hr', day: 7 },
+];
+
+export const DEFAULT_ONBOARDING_TEMPLATES = [
+  {
+    name: 'New employee',
+    description: 'For staff joining any team',
+    suits: 'staff',
+    items: [...EVERYONE_JOINER, { title: 'Meet your team and supervisor', owner: 'new_joiner', day: 1 }, ...EVERYONE_HR,
+      { title: 'Assign to a team and set "Reports to"', owner: 'hr', day: 0 }],
+  },
+  {
+    name: 'New manager',
+    description: 'For supervisors and managers who will lead people',
+    suits: 'managers',
+    items: [
+      ...EVERYONE_JOINER,
+      { title: 'Meet each of your team members one-to-one', owner: 'new_joiner', day: 10 },
+      { title: 'Learn how to approve leave, flagged clock-ins and reviews', owner: 'new_joiner', day: 3 },
+      { title: 'Agree first-month goals with your own manager', owner: 'new_joiner', day: 7 },
+      ...EVERYONE_HR,
+      { title: 'Give the right role (e.g. Team Supervisor) and link their team', owner: 'hr', day: 0 },
+      { title: 'Introduce them to their direct reports', owner: 'hr', day: 1 },
+    ],
+  },
 ];
 
 export const DEFAULT_FINANCE_CATEGORIES = {

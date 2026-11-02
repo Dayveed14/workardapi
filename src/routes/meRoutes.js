@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as attendanceController from '../controllers/attendanceController.js';
 import * as leaveController from '../controllers/leaveController.js';
@@ -19,6 +19,6 @@ router.get('/leave', leaveController.myLeave);
 router.post('/leave', validate(leaveRequestSchema), leaveController.request);
 router.post('/leave/:id/cancel', leaveController.cancel);
 
-router.get('/payslips', payrollController.myPayslips);
+router.get('/payslips', requireFeature('payroll'), payrollController.myPayslips);
 
 export default router;

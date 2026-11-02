@@ -8,11 +8,14 @@
 //   2. gives the Owner role every permission
 //   3. creates invoice settings and finance categories if missing
 //   4. creates review settings and default review criteria if missing
+//   5. organisations from before plans existed get full access (legacy Enterprise, no end date)
 // Safe to run as many times as you like.
 // ============================================================
 import 'dotenv/config';
 import { pool } from '../src/config/db.js';
 import { ensureDefaults as ensureReviewDefaults } from '../src/models/reviewModel.js';
+import { ensureDefaults as ensureOnboardingDefaults } from '../src/models/onboardingModel.js';
+import { ensureLegacy } from '../src/models/subscriptionModel.js';
 import { DEFAULT_ROLES, PERMISSION_KEYS, DEFAULT_FINANCE_CATEGORIES } from '../src/config/permissions.js';
 
 const [orgs] = await pool.query('SELECT id, name FROM organizations');
@@ -48,8 +51,10 @@ for (const org of orgs) {
   }
 
   await ensureReviewDefaults(org.id);
+  await ensureOnboardingDefaults(org.id);
+  const legacy = await ensureLegacy(org.id); // only adds a row if the organisation has none
 
-  console.log(`✔ ${org.name}: ${updated} role(s) updated, invoice/finance/review defaults ready`);
+  console.log(`✔ ${org.name}: ${updated} role(s) updated, invoice/finance/review/onboarding defaults ready${legacy ? ' · kept full access (created before plans)' : ''}`);
 }
 
 await pool.end();

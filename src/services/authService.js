@@ -7,6 +7,7 @@ import * as membershipModel from '../models/membershipModel.js';
 import * as employeeModel from '../models/employeeModel.js';
 import * as refreshTokenModel from '../models/refreshTokenModel.js';
 import * as auditModel from '../models/auditModel.js';
+import * as subscriptionModel from '../models/subscriptionModel.js';
 import * as otpService from './otpService.js';
 import * as tokenService from './tokenService.js';
 import { seedOrganization } from './organizationService.js';
@@ -48,7 +49,8 @@ export async function buildSession(userId, orgId) {
 
   return {
     user: { id: user.id, fullName: user.full_name, email: user.email, phone: user.phone },
-    organization: { id: organization.id, name: organization.name, plan: organization.plan },
+    organization: { id: organization.id, name: organization.name },
+    subscription: context.subscription, // plan, status, features, limits — see utils/subscription.js
     organizations,
     role: context.role,
     permissions: context.permissions,
@@ -79,7 +81,7 @@ export async function issueTokens(req, res, userId, orgId) {
 }
 
 // ---------- Sign up (step 1): create everything, then email a code ----------
-export async function register({ fullName, organizationName, email, phone, password, industry, size }) {
+export async function register({ fullName, organizationName, email, phone, password, industry, size, plan }) {
   const existing = await userModel.findByEmail(email);
   if (existing) {
     throw new AppError(409, 'An account with this email already exists', {
@@ -94,6 +96,8 @@ export async function register({ fullName, organizationName, email, phone, passw
     const orgId = await organizationModel.create({ name: organizationName, industry, size }, db);
     const { ownerRoleId, branchId } = await seedOrganization(orgId, db);
     await membershipModel.create({ userId: newUserId, orgId, roleId: ownerRoleId }, db);
+    // The chosen plan, unpaid until the owner pays on Paystack (the app stays locked till then)
+    await subscriptionModel.create(orgId, plan, db);
 
     // The owner is also an employee (so they can clock in, appear in the directory, etc.)
     const [firstName, ...rest] = fullName.trim().split(/\s+/);

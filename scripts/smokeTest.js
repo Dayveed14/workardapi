@@ -15,8 +15,10 @@ process.env.NODE_ENV = 'development';
 const crypto = await import('node:crypto');
 const { startFakePaystack } = await import('./fakePaystack.js');
 const PAYSTACK_KEY = `sk_test_${'a1b2c3d4e5'.repeat(3)}`;
-const fakePaystack = startFakePaystack({ validKey: PAYSTACK_KEY });
+const BILLING_KEY = `sk_test_${'w0rkard9z8'.repeat(3)}`; // Workard's own Paystack account (plans)
+const fakePaystack = startFakePaystack({ validKey: PAYSTACK_KEY, billingKey: BILLING_KEY });
 process.env.PAYSTACK_BASE_URL = fakePaystack.url; // must be set before the app loads
+process.env.PAYSTACK_SECRET_KEY = BILLING_KEY;
 if (!process.env.ENCRYPTION_KEY) process.env.ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
 
 const { default: app } = await import('../src/app.js');
@@ -79,6 +81,7 @@ try {
     organizationName: 'Ada Fashion House',
     email: ownerEmail,
     password: 'secret123',
+    plan: 'enterprise',
   });
   check('sign up asks for an email code', r.status === 201 && r.data.requiresOtp && r.data.challengeToken, r.data);
   const signupChallenge = r.data.challengeToken;
@@ -92,6 +95,29 @@ try {
   r = await owner('POST', '/auth/verify-otp', { challengeToken: signupChallenge, code: codeFor(ownerEmail) });
   check('correct code logs in as Owner', r.status === 200 && r.data.role?.isOwner, r.data);
   check('owner has an employee profile', !!r.data.employee?.id, r.data);
+  check('new organisation waits for payment', r.data.subscription?.status === 'pending_payment' && r.data.subscription.plan === 'enterprise', r.data.subscription);
+
+  console.log('\nPaying for the plan (fake Paystack)');
+  r = await owner('GET', '/dashboard');
+  check('app is locked until the plan is paid (402)', r.status === 402 && r.data.code === 'SUBSCRIPTION_REQUIRED', r.status);
+  r = await owner('GET', '/billing');
+  check('billing page still works while locked', r.status === 200 && r.data.plans.length === 3 && r.data.plans[2].quote.amountKobo === 100_000_000, r.data);
+  r = await owner('POST', '/billing/checkout', { plan: 'enterprise' });
+  check('checkout returns a Paystack payment page for ₦1,000,000', r.status === 201 && r.data.authorizationUrl && r.data.amountKobo === 100_000_000 && r.data.kind === 'new', r.data);
+  const firstRef = r.data.reference;
+  r = await owner('POST', '/billing/verify', { reference: firstRef });
+  check('not paid yet → still locked', r.data.status !== 'paid' && (await owner('GET', '/dashboard')).status === 402, r.data);
+  fakePaystack.state.transactions[firstRef].status = 'success'; // the owner pays on Paystack
+  const [verifyA, verifyB] = await Promise.all([
+    owner('POST', '/billing/verify', { reference: firstRef }),
+    owner('POST', '/billing/verify', { reference: firstRef }),
+  ]);
+  check('payment confirmed with Paystack (twice at once is fine)', verifyA.data.status === 'paid' && verifyB.data.status === 'paid', [verifyA.data, verifyB.data]);
+  const [[paidRows]] = await pool.query("SELECT COUNT(*) AS n FROM billing_payments WHERE reference = ? AND status = 'paid'", [firstRef]);
+  check('…and applied exactly once', Number(paidRows.n) === 1);
+  r = await owner('GET', '/auth/me');
+  check('plan is active for a year', r.data.subscription?.status === 'active' && r.data.subscription.daysLeft >= 364, r.data.subscription);
+  check('app unlocked after paying', (await owner('GET', '/dashboard')).status === 200);
 
   console.log('\nLog in with 2FA');
   const owner2 = client();
@@ -708,6 +734,118 @@ try {
   check('a cancelled review frees the month for a new one', r.data.created === 1, r.data);
   r = await hr('GET', `/reviews?period=${thisMonth}&status=completed`);
   check('HR sees completed reviews across the company', r.data.some((x) => x.id === reviewId), r.data.length);
+
+  console.log('\nOnboarding');
+  r = await hr('GET', '/onboarding/templates');
+  check('two starter checklists (employee & manager)', r.data.length === 2 && r.data.some((t) => t.suits === 'managers') && r.data.every((t) => t.hr_items > 0 && t.joiner_items > 0), r.data);
+  const employeeChecklist = r.data.find((t) => t.suits === 'staff');
+  r = await staff('GET', '/onboarding/templates');
+  check('staff cannot manage checklists', r.status === 403);
+  r = await hr('POST', '/onboarding/templates', { name: 'Sales rep', suits: 'staff', items: [{ title: 'Shadow a senior rep', owner: 'new_joiner', dueDay: 2 }, { title: 'Order business cards', owner: 'hr', dueDay: 0 }] });
+  check('HR creates a custom checklist', r.status === 201 && r.data.items.length === 2, r.data);
+  r = await hr('GET', '/onboarding/candidates');
+  const dayo = r.data.find((c) => c.id === otherId); // no team, no login
+  const bola = r.data.find((c) => c.id === supId); // Team Supervisor
+  const chidi = r.data.find((c) => c.id === staffId); // Employee role, but Dayo reports to him
+  check('suggested checklist: staff vs manager (roles and direct reports)', dayo?.suits === 'staff' && !dayo.hasLogin && bola?.suits === 'managers' && chidi?.suits === 'managers', [dayo, bola, chidi]);
+
+  const [obA, obB] = await Promise.all([
+    hr('POST', '/onboarding', { employeeId: staffId, templateId: employeeChecklist.id, startDate: today }),
+    hr('POST', '/onboarding', { employeeId: staffId, templateId: employeeChecklist.id, startDate: today }),
+  ]);
+  check('starting twice at once makes one onboarding', [obA.status, obB.status].sort().join() === '201,409', [obA.status, obB.status]);
+  const onboarding = obA.status === 201 ? obA.data : obB.data;
+  check('items copied with due dates from the start date', onboarding.items.length > 5 && onboarding.items.every((i) => i.due_date >= today), onboarding.items.length);
+  check('new joiner is emailed their checklist', /onboarding checklist/.test(lastEmail(staffEmail)?.subject), lastEmail(staffEmail));
+
+  r = await staff('GET', '/onboarding/mine');
+  check('new joiner sees their onboarding', r.data?.id === onboarding.id && r.data.isJoiner && !r.data.canManage, r.data);
+  const joinerItem = r.data.items.find((i) => i.owner === 'new_joiner');
+  const hrItem = r.data.items.find((i) => i.owner === 'hr');
+  r = await staff('PATCH', `/onboarding/items/${joinerItem.id}`, { done: true });
+  check('new joiner ticks their own item', r.status === 200 && r.data.items.find((i) => i.id === joinerItem.id).done_at, r.data);
+  r = await staff('PATCH', `/onboarding/items/${hrItem.id}`, { done: true });
+  check('new joiner cannot tick HR items', r.status === 403);
+  r = await sup('GET', `/onboarding/${onboarding.id}`);
+  check('others cannot open someone\'s onboarding', r.status === 404);
+  r = await hr('POST', `/onboarding/${onboarding.id}/items`, { title: 'Collect laptop from IT', owner: 'new_joiner', dueDate: today });
+  check('HR adds an extra item for this person', r.status === 201 && r.data.items.some((i) => i.title === 'Collect laptop from IT'));
+  for (const item of r.data.items.filter((i) => !i.done_at)) await hr('PATCH', `/onboarding/items/${item.id}`, { done: true });
+  r = await hr('GET', `/onboarding/${onboarding.id}`);
+  check('all ticked → onboarding completes by itself', r.data.status === 'completed' && Number(r.data.done_items) === Number(r.data.total_items), r.data.status);
+  r = await staff('PATCH', `/onboarding/items/${joinerItem.id}`, { done: false });
+  check('a finished onboarding is locked', r.status === 409);
+  r = await hr('POST', '/onboarding', { employeeId: supId, templateId: employeeChecklist.id });
+  r = await hr('POST', `/onboarding/${r.data.id}/cancel`);
+  check('HR can cancel an onboarding', r.data.status === 'cancelled');
+
+  console.log('\nPlans: Starter limits, upgrade, expiry & renewal');
+  const small = client();
+  const smallEmail = `small${stamp}@test.ng`;
+  r = await small('POST', '/auth/register', { fullName: 'Kemi Small', organizationName: 'Kemi Bakery', email: smallEmail, password: 'secret123' });
+  check('sign up needs a plan', r.status === 422 && r.data.errors?.plan, r.data);
+  r = await small('POST', '/auth/register', { fullName: 'Kemi Small', organizationName: 'Kemi Bakery', email: smallEmail, password: 'secret123', plan: 'starter' });
+  r = await small('POST', '/auth/verify-otp', { challengeToken: r.data.challengeToken, code: codeFor(smallEmail) });
+  r = await small('POST', '/billing/checkout', { plan: 'starter' });
+  check('Starter costs ₦250,000', r.data.amountKobo === 25_000_000, r.data);
+  fakePaystack.state.transactions[r.data.reference].status = 'success';
+  await small('POST', '/billing/verify', { reference: r.data.reference });
+  r = await small('GET', '/tasks');
+  check('Starter: tasks are locked (upgrade needed)', r.status === 403 && r.data.code === 'PLAN_UPGRADE_REQUIRED', r.data);
+  check('Starter: payroll is locked', (await small('GET', '/payroll')).status === 403);
+  check('Starter: onboarding is included', (await small('GET', '/onboarding/templates')).status === 200);
+  r = await small('POST', '/organization/branches', { name: 'Second shop', clockInPolicy: 'none' });
+  check('Starter: only one branch', r.status === 403 && r.data.code === 'PLAN_LIMIT', r.data);
+  r = await small('POST', '/roles', { name: 'Baker', permissions: {} });
+  check('Starter: no custom roles', r.status === 403 && r.data.code === 'PLAN_LIMIT', r.data);
+  for (let i = 1; i <= 9; i += 1) await small('POST', '/employees', { firstName: `Staff${i}`, lastName: 'Test', email: `s${i}.${stamp}@test.ng` });
+  r = await small('POST', '/employees', { firstName: 'Eleventh', lastName: 'Person', email: `s11.${stamp}@test.ng` });
+  check('Starter: up to 10 active employees', r.status === 403 && /10 active employees/.test(r.data.message), r.data);
+  r = await small('GET', '/dashboard');
+  check('Starter dashboard has no money/customer/task blocks', r.status === 200 && r.data.money === null && r.data.customers === null && r.data.tasks === null, r.data);
+
+  r = await small('GET', '/billing');
+  const toBusiness = r.data.plans.find((p) => p.id === 'business').quote;
+  check('upgrade price = the difference for the days left (₦350,000 for a full year)', toBusiness.kind === 'upgrade' && Math.abs(toBusiness.amountKobo - 35_000_000) <= 100_000, toBusiness);
+  check('can\'t downgrade or renew early', r.data.plans.find((p) => p.id === 'starter').quote.allowed === false, r.data.plans);
+  const endBefore = r.data.subscription.periodEnd;
+  r = await small('POST', '/billing/checkout', { plan: 'business' });
+  fakePaystack.state.transactions[r.data.reference].status = 'success';
+  await small('POST', '/billing/verify', { reference: r.data.reference });
+  r = await small('GET', '/auth/me');
+  check('upgraded to Business, same end date', r.data.subscription.plan === 'business' && r.data.subscription.periodEnd === endBefore, r.data.subscription);
+  check('Business: tasks now open', (await small('GET', '/tasks')).status === 200);
+  check('Business: 11th employee now allowed', (await small('POST', '/employees', { firstName: 'Eleventh', lastName: 'Person', email: `s11.${stamp}@test.ng` })).status === 201);
+
+  // The year runs out…
+  const smallOrgId = r.data.organization.id;
+  await pool.query('UPDATE subscriptions SET current_period_end = DATE_SUB(CURDATE(), INTERVAL 3 DAY) WHERE organization_id = ?', [smallOrgId]);
+  r = await small('GET', '/auth/me');
+  check('3 days after the year ends: still works (grace) with a warning', r.data.subscription.status === 'grace' && (await small('GET', '/dashboard')).status === 200, r.data.subscription);
+  await pool.query('UPDATE subscriptions SET current_period_end = DATE_SUB(CURDATE(), INTERVAL 10 DAY) WHERE organization_id = ?', [smallOrgId]);
+  check('10 days after: locked until renewed', (await small('GET', '/dashboard')).status === 402);
+  r = await small('POST', '/billing/checkout', { plan: 'starter' });
+  check('expired: can renew on any plan, full price', r.data.kind === 'renewal' && r.data.amountKobo === 25_000_000, r.data);
+  fakePaystack.state.transactions[r.data.reference].status = 'success';
+  // Owner closes the tab — Paystack's webhook confirms it instead
+  const body = JSON.stringify({ event: 'charge.success', data: { reference: r.data.reference } });
+  const sign = (key) => crypto.createHmac('sha512', key).update(body).digest('hex');
+  let hook = await fetch(`${BASE}/webhooks/paystack-billing`, { method: 'POST', headers: { 'x-paystack-signature': sign('sk_test_forged'), 'Content-Type': 'application/json' }, body });
+  check('billing webhook with a forged signature is rejected', hook.status === 401);
+  hook = await fetch(`${BASE}/webhooks/paystack-billing`, { method: 'POST', headers: { 'x-paystack-signature': sign(BILLING_KEY), 'Content-Type': 'application/json' }, body });
+  r = await small('GET', '/auth/me');
+  check('webhook renews the plan (new year from today)', hook.status === 200 && r.data.subscription.status === 'active' && r.data.subscription.plan === 'starter' && r.data.subscription.daysLeft >= 364, r.data.subscription);
+  r = await staff('POST', '/billing/checkout', { plan: 'business' });
+  check('only the owner can pay', r.status === 403);
+
+  // Organisations from before plans keep full access
+  const legacy = client();
+  const legacyEmail = `legacy${stamp}@test.ng`;
+  r = await legacy('POST', '/auth/register', { fullName: 'Old Timer', organizationName: 'Old Co', email: legacyEmail, password: 'secret123', plan: 'starter' });
+  r = await legacy('POST', '/auth/verify-otp', { challengeToken: r.data.challengeToken, code: codeFor(legacyEmail) });
+  await pool.query('DELETE FROM subscriptions WHERE organization_id = ?', [r.data.organization.id]);
+  r = await legacy('GET', '/auth/me');
+  check('organisation from before plans: full access, no payment', r.data.subscription.isLegacy && r.data.subscription.status === 'active' && (await legacy('GET', '/payroll')).status === 200, r.data.subscription);
 
   console.log('\nDashboard & roles');
   r = await owner('GET', '/dashboard');

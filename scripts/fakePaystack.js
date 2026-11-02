@@ -7,14 +7,34 @@
 // ============================================================
 import express from 'express';
 
-export function startFakePaystack({ validKey }) {
+export function startFakePaystack({ validKey, billingKey }) {
   const app = express();
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
 
-  const state = { transfers: [], recipients: 0 };
+  // transactions: reference → { amount, email, callback_url, status }
+  const state = { transfers: [], recipients: 0, transactions: {} };
 
+  // ---- A pretend checkout page (no API key — it's the page the customer sees) ----
+  app.get('/checkout/:reference', (req, res) => {
+    const tx = state.transactions[req.params.reference];
+    if (!tx) return res.status(404).send('Unknown payment');
+    res.send(`<!doctype html><html><body style="font-family:sans-serif;padding:40px">
+      <h1>Fake Paystack</h1><p>Pay ₦${(tx.amount / 100).toLocaleString()} for ${tx.email}</p>
+      <form method="post" action="/checkout/${req.params.reference}"><button id="pay" type="submit">Pay now</button></form>
+      <form method="post" action="/checkout/${req.params.reference}?cancel=1"><button id="cancel" type="submit">Cancel</button></form>
+    </body></html>`);
+  });
+  app.post('/checkout/:reference', (req, res) => {
+    const tx = state.transactions[req.params.reference];
+    if (!tx) return res.status(404).send('Unknown payment');
+    tx.status = req.query.cancel ? 'abandoned' : 'success';
+    res.redirect(`${tx.callback_url}?reference=${req.params.reference}&trxref=${req.params.reference}`);
+  });
+
+  const keys = [validKey, billingKey].filter(Boolean);
   app.use((req, res, next) => {
-    if (req.get('authorization') !== `Bearer ${validKey}`) {
+    if (!keys.some((k) => req.get('authorization') === `Bearer ${k}`)) {
       return res.status(401).json({ status: false, message: 'Invalid key' });
     }
     next();
@@ -41,6 +61,22 @@ export function startFakePaystack({ validKey }) {
     res.json({ status: true, message: `${data.length} transfers queued.`, data });
   });
 
+  // ---- Accepting payments (Workard's subscription billing) ----
+  app.post('/transaction/initialize', (req, res) => {
+    const { reference, amount, email, callback_url: callbackUrl } = req.body;
+    state.transactions[reference] = { amount, email, callback_url: callbackUrl, status: 'ongoing' };
+    res.json({
+      status: true,
+      data: { authorization_url: `${baseUrl()}/checkout/${reference}`, access_code: `ac_${reference}`, reference },
+    });
+  });
+  app.get('/transaction/verify/:reference', (req, res) => {
+    const tx = state.transactions[req.params.reference];
+    if (!tx) return res.status(400).json({ status: false, message: 'Transaction reference not found' });
+    res.json({ status: true, data: { status: tx.status, amount: tx.amount, currency: 'NGN', reference: req.params.reference } });
+  });
+
   const server = app.listen(0);
+  const baseUrl = () => `http://127.0.0.1:${server.address().port}`;
   return { server, state, url: `http://127.0.0.1:${server.address().port}` };
 }
