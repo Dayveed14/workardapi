@@ -60,6 +60,11 @@ export const env = Object.freeze({
 
   clientUrls: list('CLIENT_URL', 'http://localhost:5173'),
 
+  // How many proxies sit in front of the API, so it sees each visitor's real IP
+  // (office Wi-Fi clock-in check, login rate limits):
+  //   1 = browsers call Render directly, 2 = through the Vercel /api rewrite
+  trustProxy: num('TRUST_PROXY', 1),
+
   db: Object.freeze({
     host: str('DB_HOST', 'localhost'),
     port: num('DB_PORT', 3306),
