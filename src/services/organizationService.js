@@ -12,6 +12,7 @@ import * as leaveModel from '../models/leaveModel.js';
 import * as employeeModel from '../models/employeeModel.js';
 import * as auditModel from '../models/auditModel.js';
 import AppError from '../utils/AppError.js';
+import * as holidayModel from '../models/holidayModel.js';
 import { checkCanAddBranch } from './planLimitService.js';
 
 // Called once when a company signs up: default roles, leave types and a first branch.
@@ -158,4 +159,40 @@ export async function updateLeaveType(auth, id, data) {
 
 export async function listAuditLogs(orgId, query) {
   return auditModel.list(orgId, query);
+}
+
+// ---------- Public holidays (not counted as absent on attendance) ----------
+// Nigeria's fixed-date public holidays. Easter, Eid and Maulud move every year —
+// add those yourself once the government announces them.
+const FIXED_NG_HOLIDAYS = [
+  ['01-01', "New Year's Day"],
+  ['05-01', "Workers' Day"],
+  ['06-12', 'Democracy Day'],
+  ['10-01', 'Independence Day'],
+  ['12-25', 'Christmas Day'],
+  ['12-26', 'Boxing Day'],
+];
+
+export async function listHolidays(orgId, year) {
+  return holidayModel.listForYear(orgId, year);
+}
+
+export async function addHoliday(auth, { date, name }) {
+  const added = await holidayModel.add(auth.orgId, { date, name });
+  if (!added) throw new AppError(409, 'That date is already a holiday', { date: 'Already a holiday' });
+  await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'holiday.added', details: `${name} (${date})` });
+  return holidayModel.listForYear(auth.orgId, Number(date.slice(0, 4)));
+}
+
+export async function addNationalHolidays(auth, year) {
+  let added = 0;
+  for (const [day, name] of FIXED_NG_HOLIDAYS) {
+    if (await holidayModel.add(auth.orgId, { date: `${year}-${day}`, name })) added += 1;
+  }
+  await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'holiday.added', details: `${added} national holidays for ${year}` });
+  return { added, holidays: await holidayModel.listForYear(auth.orgId, year) };
+}
+
+export async function removeHoliday(auth, id) {
+  await holidayModel.remove(auth.orgId, id);
 }

@@ -847,6 +847,51 @@ try {
   r = await legacy('GET', '/auth/me');
   check('organisation from before plans: full access, no payment', r.data.subscription.isLegacy && r.data.subscription.status === 'active' && (await legacy('GET', '/payroll')).status === 200, r.data.subscription);
 
+  console.log('\nMonthly attendance adherence & holidays');
+  const { monthAdherence } = await import('../src/utils/adherence.js');
+  // October 2026: 22 working days. 1 holiday, 5 days leave → 16 expected days.
+  const adh = monthAdherence({
+    month: '2026-10', today: '2026-11-04', startDate: '2026-01-01',
+    records: [
+      { work_date: '2026-10-02', is_late: 1 },
+      { work_date: '2026-10-05', is_late: 0, review_status: 'pending' },
+      { work_date: '2026-10-06', is_late: 0, review_status: 'rejected' },
+      { work_date: '2026-10-07', is_late: 0 },
+    ],
+    leaves: [{ start_date: '2026-10-12', end_date: '2026-10-16' }],
+    holidays: ['2026-10-01'],
+  });
+  check('holidays skipped, leave not held against them', adh.holidays === 1 && adh.onLeave === 5 && adh.expected === 16, adh);
+  check('on time / late / absent counted (rejected clock-in = absent, flagged noted)', adh.onTime === 2 && adh.late === 1 && adh.absent === 13 && adh.flagged === 1, adh);
+  check('adherence = on time ÷ expected days', adh.adherence === Math.round((2 / 16) * 100), adh.adherence);
+  const starter = monthAdherence({ month: '2026-10', today: '2026-11-04', startDate: '2026-10-26', records: [], leaves: [], holidays: [] });
+  check('days before someone started are not counted', starter.expected === 5 && starter.absent === 5, starter);
+  const todayOnly = monthAdherence({ month: '2026-11', today: '2026-11-02', startDate: null, records: [], leaves: [], holidays: [] });
+  check('today isn\'t "absent" until the day is over', todayOnly.absent === 0 && todayOnly.adherence === null, todayOnly);
+
+  const yearNow = new Date().getFullYear();
+  r = await owner('POST', '/organization/holidays/national', { year: yearNow });
+  check('add Nigeria\'s 6 fixed public holidays', r.status === 201 && r.data.added === 6, r.data);
+  r = await owner('POST', '/organization/holidays/national', { year: yearNow });
+  check('…adding again changes nothing', r.data.added === 0);
+  r = await owner('POST', '/organization/holidays', { date: `${yearNow}-04-03`, name: 'Good Friday' });
+  check('add a moving holiday', r.status === 201 && r.data.length === 7, r.data.length);
+  r = await staff('POST', '/organization/holidays', { date: `${yearNow}-04-06`, name: 'Easter Monday' });
+  check('staff cannot add holidays', r.status === 403);
+  r = await staff('GET', `/organization/holidays?year=${yearNow}`);
+  check('everyone can see the holidays', r.status === 200 && r.data.length === 7);
+
+  r = await staff('GET', '/me/attendance');
+  check('my attendance includes this month\'s adherence', r.data.adherence && 'onTime' in r.data.adherence && 'previousAdherence' in r.data, r.data.adherence);
+  r = await owner('GET', `/attendance/monthly?month=${thisMonth}`);
+  check('monthly view: one row per active employee, with team totals', r.status === 200 && r.data.people.length >= 5 && r.data.team && 'adherence' in r.data.team, r.data.team);
+  const sortedOk = r.data.people.every((p, i, a) => i === 0 || (a[i - 1].adherence ?? 101) <= (p.adherence ?? 101));
+  check('worst adherence first (who needs attention)', sortedOk, r.data.people.map((p) => p.adherence));
+  r = await sup('GET', `/attendance/monthly?month=${thisMonth}`);
+  check('supervisor sees only their team', r.data.people.every((p) => [staffId, supId].includes(p.employeeId)), r.data.people.map((p) => p.employeeId));
+  r = await staff('GET', `/attendance/monthly?month=${thisMonth}`);
+  check('staff cannot see everyone\'s adherence', r.status === 403);
+
   console.log('\nDashboard & roles');
   r = await owner('GET', '/dashboard');
   check('owner dashboard counts all 6 employees', r.data.headcount === 6, r.data); // incl. HR & finance added for payroll

@@ -38,3 +38,8 @@ export const clockOut = asyncHandler(async (req, res) => {
 export const myHistory = asyncHandler(async (req, res) => {
   res.json(await attendanceService.myHistory(req.auth, req.validatedQuery.month));
 });
+
+// GET /api/attendance/monthly?month=2026-11  (adherence for everyone in the viewer's scope)
+export const monthly = asyncHandler(async (req, res) => {
+  res.json(await attendanceService.getMonthly(req.auth, req.scope, req.validatedQuery.month));
+});

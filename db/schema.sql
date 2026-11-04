@@ -831,3 +831,16 @@ CREATE TABLE IF NOT EXISTS onboarding_items (
   done_by         BIGINT UNSIGNED NULL,           -- user id
   CONSTRAINT fk_obi_onboarding FOREIGN KEY (onboarding_id) REFERENCES onboardings(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+-- ============================================================
+-- PUBLIC HOLIDAYS — days nobody is expected at work (not counted as absent)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS holidays (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  holiday_date     DATE NOT NULL,
+  name             VARCHAR(120) NOT NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_holiday_day (organization_id, holiday_date),
+  CONSTRAINT fk_holiday_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;

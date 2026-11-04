@@ -5,7 +5,11 @@ import { getEmployeeOrFail } from './accessService.js';
 import { distanceInMetres } from '../utils/geo.js';
 import { parseIpList } from '../utils/ip.js';
 import { scopeCondition } from '../utils/scope.js';
-import { toDateString, timeOnDate, addMinutes } from '../utils/dates.js';
+import { toDateString, timeOnDate, addMinutes, monthRange } from '../utils/dates.js';
+import * as employeeModel from '../models/employeeModel.js';
+import * as leaveModel from '../models/leaveModel.js';
+import * as holidayModel from '../models/holidayModel.js';
+import { monthAdherence, previousMonth } from '../utils/adherence.js';
 import AppError from '../utils/AppError.js';
 
 function requireEmployee(auth) {
@@ -146,25 +150,94 @@ export async function clockOut(auth) {
 // month = "2026-11"
 export async function myHistory(auth, month) {
   const me = requireEmployee(auth);
-  return historyFor(me.id, month);
+  return historyFor(auth.orgId, me.id, month);
 }
 
 export async function employeeHistory(auth, employeeId, month) {
   await getEmployeeOrFail(auth, 'attendance.view', employeeId, { allowSelf: true });
-  return historyFor(employeeId, month);
+  return historyFor(auth.orgId, employeeId, month);
 }
 
-async function historyFor(employeeId, month) {
-  const [y, m] = (month || toDateString().slice(0, 7)).split('-').map(Number);
-  const from = toDateString(new Date(y, m - 1, 1));
-  const to = toDateString(new Date(y, m, 0));
-  const records = await attendanceModel.listForEmployee(employeeId, from, to);
+// One person's month: the clock-in list, simple totals, and their adherence
+// (this month and last month, so the screen can show the trend)
+async function historyFor(orgId, employeeId, monthArg) {
+  const month = monthArg || toDateString().slice(0, 7);
+  const prev = previousMonth(month);
+  const { from } = monthRange(prev);
+  const { to } = monthRange(month);
+
+  const [employee, records, leaves, holidays] = await Promise.all([
+    employeeModel.findById(orgId, employeeId),
+    attendanceModel.listForEmployee(employeeId, from, to),
+    leaveModel.listApprovedInRange(employeeId, from, to),
+    holidayModel.datesInRange(orgId, from, to),
+  ]);
+  const today = toDateString();
+  const adherenceFor = (mth) =>
+    monthAdherence({ month: mth, today, startDate: employee?.start_date, records, leaves, holidays });
+
+  const monthRecords = records.filter((r) => r.work_date.startsWith(month));
   const summary = {
-    daysPresent: records.length,
-    daysLate: records.filter((r) => r.is_late).length,
-    hoursWorked: Math.round(records.reduce((sum, r) => sum + (r.minutes_worked || 0), 0) / 6) / 10,
+    daysPresent: monthRecords.length,
+    daysLate: monthRecords.filter((r) => r.is_late).length,
+    hoursWorked: Math.round(monthRecords.reduce((sum, r) => sum + (r.minutes_worked || 0), 0) / 6) / 10,
   };
-  return { records, summary };
+  const previous = adherenceFor(prev);
+  return {
+    records: monthRecords,
+    summary,
+    adherence: adherenceFor(month),
+    previousAdherence: previous.adherence,
+  };
+}
+
+// Everyone the manager can see, one adherence row each, worst first (who needs attention)
+export async function getMonthly(auth, scope, monthArg) {
+  const month = monthArg || toDateString().slice(0, 7);
+  const prev = previousMonth(month);
+  const { from } = monthRange(prev);
+  const { to } = monthRange(month);
+  const today = toDateString();
+
+  const [{ rows: people }, records, leaves, holidays] = await Promise.all([
+    employeeModel.list(auth.orgId, scopeCondition(scope, auth.employee), { status: 'active', limit: 2000, offset: 0 }),
+    attendanceModel.listForOrgRange(auth.orgId, from, to),
+    leaveModel.listApprovedForOrgRange(auth.orgId, from, to),
+    holidayModel.datesInRange(auth.orgId, from, to),
+  ]);
+
+  const group = (rows) => {
+    const map = new Map();
+    for (const r of rows) map.set(r.employee_id, [...(map.get(r.employee_id) || []), r]);
+    return map;
+  };
+  const recordsBy = group(records);
+  const leavesBy = group(leaves);
+
+  const rows = people.map((p) => {
+    const input = { today, startDate: p.start_date, records: recordsBy.get(p.id) || [], leaves: leavesBy.get(p.id) || [], holidays };
+    const current = monthAdherence({ ...input, month });
+    return {
+      employeeId: p.id,
+      firstName: p.first_name,
+      lastName: p.last_name,
+      jobTitle: p.job_title,
+      photoUrl: p.photo_url,
+      departmentName: p.department_name,
+      ...current,
+      previousAdherence: monthAdherence({ ...input, month: prev }).adherence,
+    };
+  });
+
+  // Worst adherence first; people with no expected days yet (e.g. start next month) last
+  rows.sort((a, b) => (a.adherence ?? 101) - (b.adherence ?? 101) || a.firstName.localeCompare(b.firstName));
+
+  const sum = (key) => rows.reduce((total, r) => total + r[key], 0);
+  const team = { onTime: sum('onTime'), late: sum('late'), absent: sum('absent'), onLeave: sum('onLeave'), flagged: sum('flagged') };
+  team.expected = team.onTime + team.late + team.absent;
+  team.adherence = team.expected ? Math.round((team.onTime / team.expected) * 100) : null;
+
+  return { month, upTo: rows[0]?.upTo || null, holidays: holidays.filter((d) => d.startsWith(month)).length, team, people: rows };
 }
 
 // ---------- Managers ----------

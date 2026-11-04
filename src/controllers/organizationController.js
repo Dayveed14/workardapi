@@ -65,3 +65,22 @@ export const auditLogs = asyncHandler(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   res.json(await organizationService.listAuditLogs(req.auth.orgId, { limit: 50, offset: (page - 1) * 50 }));
 });
+
+// ---------- Public holidays ----------
+// GET /api/organization/holidays?year=2026
+export const holidays = asyncHandler(async (req, res) => {
+  res.json(await organizationService.listHolidays(req.auth.orgId, req.validatedQuery.year));
+});
+// POST /api/organization/holidays  { date, name }
+export const addHoliday = asyncHandler(async (req, res) => {
+  res.status(201).json(await organizationService.addHoliday(req.auth, req.body));
+});
+// POST /api/organization/holidays/national  { year }  (Nigeria's fixed-date holidays)
+export const addNationalHolidays = asyncHandler(async (req, res) => {
+  res.status(201).json(await organizationService.addNationalHolidays(req.auth, req.body.year));
+});
+// DELETE /api/organization/holidays/:id
+export const removeHoliday = asyncHandler(async (req, res) => {
+  await organizationService.removeHoliday(req.auth, req.params.id);
+  res.json({ message: 'Holiday removed' });
+});

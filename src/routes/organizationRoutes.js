@@ -8,6 +8,9 @@ import {
   nameSchema,
   teamSchema,
   leaveTypeSchema,
+  holidaySchema,
+  holidayYearSchema,
+  nationalHolidaysSchema,
 } from '../validators/organizationSchemas.js';
 
 const router = Router();
@@ -33,6 +36,12 @@ router.delete('/departments/:id', manage, orgController.deleteDepartment);
 router.post('/teams', manage, validate(teamSchema), orgController.createTeam);
 router.put('/teams/:id', manage, validate(teamSchema), orgController.updateTeam);
 router.delete('/teams/:id', manage, orgController.deleteTeam);
+
+// Public holidays — everyone can see them; only managers of the organisation change them
+router.get('/holidays', validate(holidayYearSchema, 'query'), orgController.holidays);
+router.post('/holidays', manage, validate(holidaySchema), orgController.addHoliday);
+router.post('/holidays/national', manage, validate(nationalHolidaysSchema), orgController.addNationalHolidays);
+router.delete('/holidays/:id', manage, orgController.removeHoliday);
 
 router.post('/leave-types', manage, validate(leaveTypeSchema), orgController.createLeaveType);
 router.put('/leave-types/:id', manage, validate(leaveTypeSchema), orgController.updateLeaveType);

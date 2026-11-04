@@ -55,3 +55,15 @@ export const roleSchema = z.object({
   description: optionalText(255),
   permissions: z.record(z.string()).default({}),
 });
+
+// ---------- Public holidays ----------
+const year = z.coerce.number().int().min(2020).max(2100);
+
+export const holidayYearSchema = z.object({ year: year.default(new Date().getFullYear()) });
+
+export const holidaySchema = z.object({
+  date: z.string({ required_error: 'Choose the date' }).regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose the date'),
+  name: z.string({ required_error: 'Name the holiday' }).trim().min(2, 'Name the holiday').max(120),
+});
+
+export const nationalHolidaysSchema = z.object({ year });

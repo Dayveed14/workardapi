@@ -147,3 +147,13 @@ export async function listApprovedInRange(employeeId, from, to, db = pool) {
   );
   return rows;
 }
+
+// Approved leave in the organisation that overlaps a date range
+export async function listApprovedForOrgRange(orgId, from, to, db = pool) {
+  const [rows] = await db.query(
+    `SELECT employee_id, start_date, end_date FROM leave_requests
+      WHERE organization_id = ? AND status = 'approved' AND start_date <= ? AND end_date >= ?`,
+    [orgId, to, from]
+  );
+  return rows;
+}

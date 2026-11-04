@@ -150,3 +150,13 @@ export async function statsForEmployee(employeeId, from, to, db = pool) {
     avgMinutesWorked: r.avg_minutes === null ? null : Number(r.avg_minutes),
   };
 }
+
+// Every clock-in in the organisation for a date range (for the monthly adherence view)
+export async function listForOrgRange(orgId, from, to, db = pool) {
+  const [rows] = await db.query(
+    `SELECT employee_id, work_date, is_late, review_status FROM attendance
+      WHERE organization_id = ? AND work_date BETWEEN ? AND ?`,
+    [orgId, from, to]
+  );
+  return rows;
+}
