@@ -1,5 +1,6 @@
 import asyncHandler from '../utils/asyncHandler.js';
 import * as customerService from '../services/customerService.js';
+import * as salesService from '../services/salesService.js';
 
 // GET /api/customers?search=&stage=&assignedEmployeeId=&page=
 export const list = asyncHandler(async (req, res) => {
@@ -59,4 +60,15 @@ export const completeFollowUp = asyncHandler(async (req, res) => {
 // GET /api/customers/:id/payments
 export const payments = asyncHandler(async (req, res) => {
   res.json(await customerService.listPayments(req.auth, req.params.id));
+});
+
+// GET /api/customers/sales?months=6  (sales dashboard for the customers in scope)
+export const sales = asyncHandler(async (req, res) => {
+  res.json(await salesService.getSales(req.auth, req.scope, req.validatedQuery.months));
+});
+
+// GET /api/customers/:id/stages  (how this customer moved through the pipeline)
+export const stages = asyncHandler(async (req, res) => {
+  await customerService.getCustomer(req.auth, req.params.id); // checks scope
+  res.json(await salesService.stageHistory(req.params.id));
 });

@@ -13,7 +13,7 @@ const customerFields = {
   email: optionalEmail,
   phone: optionalPhone,
   address: optionalText(255),
-  stage: z.enum(['lead', 'prospect', 'customer', 'inactive']).default('lead'),
+  stage: z.enum(['lead', 'prospect', 'customer', 'lost', 'inactive']).default('lead'),
   source: optionalText(60),
   assignedEmployeeId: optionalId,
   notes: optionalText(5000),
@@ -25,7 +25,7 @@ export const updateCustomerSchema = z.object(customerFields).partial();
 
 export const listCustomersSchema = z.object({
   search: optionalText(100),
-  stage: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['lead', 'prospect', 'customer', 'inactive']).optional()),
+  stage: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['lead', 'prospect', 'customer', 'lost', 'inactive']).optional()),
   assignedEmployeeId: optionalId,
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -36,4 +36,8 @@ export const activitySchema = z.object({
   subject: z.string({ required_error: 'Subject is required' }).trim().min(2, 'Add a short subject').max(160),
   details: optionalText(5000),
   followUpOn: optionalDate,
+});
+
+export const salesQuerySchema = z.object({
+  months: z.coerce.number().int().min(3).max(12).default(6),
 });

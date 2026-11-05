@@ -24,5 +24,9 @@ const conn = await mysql.createConnection({
 });
 
 await conn.query(sql);
+
+// Changes to existing tables (new ENUM values etc.) — safe to run every time
+const upgrades = fs.readFileSync(path.join(__dirname, '..', 'db', 'upgrades.sql'), 'utf8');
+await conn.query(`USE \`${dbName}\`; ${upgrades}`);
 await conn.end();
 console.log(`✔ Database "${dbName}" is ready`);

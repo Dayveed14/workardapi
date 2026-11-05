@@ -58,7 +58,7 @@ export async function recordPayment(auth, invoiceId, data) {
       );
       // 4. Re-add from the payments table
       await refreshInvoiceTotals(invoice, db);
-      await customerModel.update(auth.orgId, invoice.customer_id, { stage: 'customer' }, db);
+      await customerModel.setStage(auth.orgId, invoice.customer_id, 'customer', auth.userId, db); // paying makes them a customer
       return id;
     });
   } catch (err) {

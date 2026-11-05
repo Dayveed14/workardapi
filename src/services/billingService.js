@@ -5,7 +5,7 @@ import * as auditModel from '../models/auditModel.js';
 import * as paystackService from './paystackService.js';
 import { withTransaction } from '../config/db.js';
 import { env } from '../config/env.js';
-import { PLANS, PLAN_ORDER, FEATURE_NAMES } from '../config/plans.js';
+import { PLANS, PLAN_ORDER, FEATURE_NAMES, billing } from '../config/plans.js';
 import { describeSubscription, daysBetween, oneYearFrom } from '../utils/subscription.js';
 import { toDateString, addDays, formatDateLong } from '../utils/dates.js';
 import { formatNaira } from '../utils/money.js';
@@ -14,7 +14,8 @@ import AppError from '../utils/AppError.js';
 // ============================================================
 // PLANS & BILLING — organisations pay Workard once a year.
 //
-//   sign up (plan chosen) → status pending_payment → app locked
+//   sign up (plan chosen) → free trial (TRIAL_DAYS) → pay, or the app locks when the trial ends
+//   BILLING_ENABLED=false → no trial, no payments: everyone has everything for free
 //   owner pays on Paystack → Paystack sends them back to /billing/callback
 //   → we ASK PAYSTACK whether it was paid (never trust the browser)
 //   → subscription active for one year
@@ -44,9 +45,10 @@ export function quote(sub, planId, today = toDateString()) {
   const plan = PLANS[planId];
   const desc = describeSubscription(sub, today);
   if (desc.isLegacy) return { allowed: false, reason: 'Your organisation already has full access.' };
+  if (desc.status === 'free') return { allowed: false, reason: 'Workard is free during early access — nothing to pay yet.' };
 
-  if (['pending_payment', 'expired', 'grace'].includes(desc.status)) {
-    return { allowed: true, kind: desc.status === 'pending_payment' ? 'new' : 'renewal', amountKobo: plan.priceKobo };
+  if (['trial', 'trial_ended', 'expired', 'grace'].includes(desc.status)) {
+    return { allowed: true, kind: desc.status.startsWith('trial') ? 'new' : 'renewal', amountKobo: plan.priceKobo };
   }
   if (rank(planId) > rank(desc.plan)) {
     const daysLeft = daysBetween(today, sub.current_period_end) + 1; // today counts
@@ -92,6 +94,11 @@ export function publicPlan(plan) {
 
 export function listPlans() {
   return PLAN_ORDER.map((id) => publicPlan(PLANS[id]));
+}
+
+// Is billing switched on? (the sign-up page hides the plan picker when it isn't)
+export function getConfig() {
+  return { enabled: billing.enabled, trialDays: billing.trialDays };
 }
 
 // ---------- Step 1: start a payment ----------

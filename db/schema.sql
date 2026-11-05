@@ -291,7 +291,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 -- ============================================================
 
 -- ---------- Customers (CRM) ----------
--- stage: lead → prospect → customer (or inactive)
+-- stage: lead → prospect → customer (or lost / inactive)
 -- assigned_employee_id: the staff member who owns the account
 CREATE TABLE IF NOT EXISTS customers (
   id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -302,7 +302,7 @@ CREATE TABLE IF NOT EXISTS customers (
   email                 VARCHAR(190) NULL,
   phone                 VARCHAR(30)  NULL,
   address               VARCHAR(255) NULL,
-  stage                 ENUM('lead','prospect','customer','inactive') NOT NULL DEFAULT 'lead',
+  stage                 ENUM('lead','prospect','customer','lost','inactive') NOT NULL DEFAULT 'lead',
   source                VARCHAR(60)  NULL,
   assigned_employee_id  BIGINT UNSIGNED NULL,
   notes                 TEXT NULL,
@@ -742,9 +742,9 @@ CREATE TABLE IF NOT EXISTS review_scores (
 CREATE TABLE IF NOT EXISTS subscriptions (
   organization_id       BIGINT UNSIGNED PRIMARY KEY,
   plan                  ENUM('starter','business','enterprise') NOT NULL,
-  status                ENUM('pending_payment','active') NOT NULL DEFAULT 'pending_payment',
+  status                ENUM('pending_payment','trial','active') NOT NULL DEFAULT 'trial',
   current_period_start  DATE NULL,
-  current_period_end    DATE NULL,      -- last day of the paid year
+  current_period_end    DATE NULL,      -- last day of the paid year (or of the free trial)
   is_legacy             TINYINT(1) NOT NULL DEFAULT 0,
   created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -843,4 +843,70 @@ CREATE TABLE IF NOT EXISTS holidays (
   created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_holiday_day (organization_id, holiday_date),
   CONSTRAINT fk_holiday_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- FLAGGED / LATE CLOCK-INS — the employee's side of the story
+-- A flagged clock-in waits 24 hours for the employee to accept or dispute it
+-- (with a reason). Then it goes to managers. 'no_response' is added when the
+-- 24 hours run out without an answer. Late (but not flagged) days can also get a reason.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS attendance_explanations (
+  attendance_id      BIGINT UNSIGNED PRIMARY KEY,
+  organization_id    BIGINT UNSIGNED NOT NULL,
+  response           ENUM('accept','dispute','no_response') NOT NULL,
+  reason             VARCHAR(1000) NULL,
+  responded_by       BIGINT UNSIGNED NULL,   -- user id (NULL for no_response)
+  responded_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_attx_att FOREIGN KEY (attendance_id) REFERENCES attendance(id) ON DELETE CASCADE,
+  CONSTRAINT fk_attx_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ---------- Sales pipeline history ----------
+-- One row every time a customer moves stage (lead → prospect → customer / lost).
+-- from_stage is NULL for the row written when the customer was added.
+-- The sales dashboard counts conversions and lost deals from this table.
+CREATE TABLE IF NOT EXISTS customer_stage_changes (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  customer_id      BIGINT UNSIGNED NOT NULL,
+  from_stage       VARCHAR(20) NULL,
+  to_stage         VARCHAR(20) NOT NULL,
+  changed_by       BIGINT UNSIGNED NULL,
+  changed_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_csc_org (organization_id, to_stage, changed_at),
+  KEY idx_csc_customer (customer_id),
+  CONSTRAINT fk_csc_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_csc_customer FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ---------- Invoice branding ----------
+-- Logo, brand colour and the business's signature on every invoice.
+-- logo_url / signature_url: a Cloudinary link (or, in development without
+-- Cloudinary, the image itself as a data: URL — hence MEDIUMTEXT).
+CREATE TABLE IF NOT EXISTS invoice_branding (
+  organization_id      BIGINT UNSIGNED PRIMARY KEY,
+  logo_url             MEDIUMTEXT NULL,
+  logo_public_id       VARCHAR(255) NULL,
+  brand_color          CHAR(7) NULL,          -- e.g. #1d4ed8
+  signature_url        MEDIUMTEXT NULL,
+  signature_public_id  VARCHAR(255) NULL,
+  signatory_name       VARCHAR(120) NULL,
+  signatory_title      VARCHAR(120) NULL,
+  updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_brand_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- The customer accepting an invoice on the public link: their name, drawn signature, a note.
+-- One per invoice. signature_data is a small PNG as a data: URL (customers can't upload files).
+CREATE TABLE IF NOT EXISTS invoice_acceptances (
+  invoice_id       BIGINT UNSIGNED PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  signer_name      VARCHAR(120) NOT NULL,
+  signature_data   MEDIUMTEXT NOT NULL,
+  note             VARCHAR(1000) NULL,
+  ip_address       VARCHAR(64) NULL,
+  accepted_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_acc_invoice FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
+  CONSTRAINT fk_acc_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;

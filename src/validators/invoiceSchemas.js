@@ -80,3 +80,23 @@ export const invoiceSettingsSchema = z.object({
   ),
   footerNote: optionalText(500),
 });
+
+// ---------- Branding ----------
+export const brandingSchema = z.object({
+  brandColor: z.preprocess(
+    (v) => (v === '' || v === undefined ? null : v),
+    z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Pick a colour').nullable()
+  ),
+  signatoryName: optionalText(120),
+  signatoryTitle: optionalText(120),
+});
+
+// The customer accepting on the public link. The signature is a small PNG drawn in the browser.
+export const acceptInvoiceSchema = z.object({
+  name: z.string().trim().min(2, 'Type your full name').max(120),
+  signature: z
+    .string()
+    .startsWith('data:image/png;base64,', 'Sign in the box')
+    .max(150_000, 'That signature is too large — clear it and sign again'),
+  note: optionalText(1000),
+});

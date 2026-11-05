@@ -1,4 +1,5 @@
 import { pool } from '../config/db.js';
+import { recordChange } from './salesModel.js';
 
 // Columns a form can set (camelCase → snake_case)
 const EDITABLE = {
@@ -53,6 +54,16 @@ export async function update(orgId, id, data, db = pool) {
   }
   if (!sets.length) return;
   await db.query(`UPDATE customers SET ${sets.join(', ')} WHERE organization_id = ? AND id = ?`, [...values, orgId, id]);
+}
+
+// Move a customer to a new stage and keep the history (does nothing if it's already there)
+export async function setStage(orgId, id, toStage, changedBy, db = pool) {
+  const [rows] = await db.query('SELECT stage FROM customers WHERE organization_id = ? AND id = ?', [orgId, id]);
+  const fromStage = rows[0]?.stage;
+  if (!fromStage || fromStage === toStage) return false;
+  await db.query('UPDATE customers SET stage = ? WHERE organization_id = ? AND id = ?', [toStage, orgId, id]);
+  await recordChange({ orgId, customerId: id, fromStage, toStage, changedBy }, db);
+  return true;
 }
 
 // One customer, only if inside the scope condition (built on alias "e")

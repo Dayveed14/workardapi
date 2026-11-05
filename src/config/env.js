@@ -99,6 +99,12 @@ export const env = Object.freeze({
 
   // Plans & billing — WORKARD'S OWN Paystack secret key (organisations pay their yearly plan into it).
   // Not the same as the keys businesses add for payroll.
+  // Plans & payment switch. false (default) = Workard is free for everyone (early access).
+  // true = new organisations get a free trial, then pay. Organisations that signed up while
+  // it was free get their trial from BILLING_START_DATE (YYYY-MM-DD, the day you switch on).
+  billingEnabled: bool('BILLING_ENABLED', false),
+  trialDays: num('TRIAL_DAYS', 14),
+  billingStartDate: str('BILLING_START_DATE'),
   billingPaystackKey: str('PAYSTACK_SECRET_KEY'), // empty → plan payments show "not set up yet" (the API still starts)
 
   cloudinary: Object.freeze({

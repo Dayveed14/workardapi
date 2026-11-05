@@ -17,6 +17,15 @@
 // Limits: null = no limit.
 // ============================================================
 
+import { env } from './env.js';
+
+// The billing switch (from .env). Kept as a plain object so the tests can flip it.
+export const billing = {
+  enabled: env.billingEnabled,
+  trialDays: env.trialDays,
+  startDate: env.billingStartDate || null,
+};
+
 export const PLAN_ORDER = ['starter', 'business', 'enterprise'];
 
 export const PLANS = {

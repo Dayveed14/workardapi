@@ -10,6 +10,10 @@ import * as employeeModel from '../models/employeeModel.js';
 import * as leaveModel from '../models/leaveModel.js';
 import * as holidayModel from '../models/holidayModel.js';
 import { monthAdherence, previousMonth } from '../utils/adherence.js';
+import * as explanationModel from '../models/explanationModel.js';
+import { reviewersFor, emailEach } from './notificationService.js';
+import { flagForEmployeeEmail, flagForManagerEmail, flagDecisionEmail } from './emailService.js';
+import { env } from '../config/env.js';
 import AppError from '../utils/AppError.js';
 
 function requireEmployee(auth) {
@@ -71,8 +75,11 @@ export async function getToday(auth) {
   const me = requireEmployee(auth);
   const branch = await getBranchFor(auth, me);
   const record = await attendanceModel.findForDay(me.id, toDateString());
+  const since = new Date(Date.now() - EXPLAIN_HOURS * 3600 * 1000);
   return {
     record,
+    // Flagged clock-ins (today's or yesterday's) the employee still needs to explain
+    toExplain: (await explanationModel.listAwaitingFor(me.id, since)).map((r) => ({ ...r, explain_deadline: deadlineOf(r) })),
     branch: branch
       ? {
           name: branch.name,
@@ -122,6 +129,13 @@ export async function clockIn(auth, coords, ip) {
     isFlagged: !passed,
     flagReason: passed ? null : reasons.join('; ') || 'Clock-in could not be verified',
   });
+
+  // The owner has nobody above them to review a flag, so theirs is accepted straight away
+  if (!passed && auth.role.isOwner) {
+    await attendanceModel.setReview(id, { status: 'approved', note: 'Owner — no review needed', reviewedBy: auth.userId, reviewedAt: now });
+  } else if (!passed) {
+    await notifyEmployeeOfFlag(auth.orgId, me.id, reasons.join('; ') || 'Clock-in could not be verified', now);
+  }
 
   const record = await attendanceModel.findForDay(me.id, workDate);
   return {
@@ -269,9 +283,111 @@ export async function getRegister(auth, scope, date) {
   };
 }
 
+// ============================================================
+// FLAGGED CLOCK-INS — the employee has 24 hours to give their side first
+//   waiting  → the employee can accept ("yes, here's why") or dispute ("this is wrong")
+//   ready    → they answered, or 24 hours passed → managers decide (approve / reject)
+//   decided  → approved (counts as present) or rejected (counts as absent)
+// Nobody reviews their own clock-in. The owner's own flags are accepted automatically.
+// ============================================================
+export const EXPLAIN_HOURS = 24;
+
+const clockInTime = (record) => new Date(String(record.clock_in_at).replace(' ', 'T'));
+const deadlineOf = (record) => new Date(clockInTime(record).getTime() + EXPLAIN_HOURS * 3600 * 1000);
+
+export function flagStage(record, now = new Date()) {
+  if (record.review_status !== 'pending') return 'decided';
+  if (record.explanation_response) return 'ready';
+  return now >= deadlineOf(record) ? 'ready' : 'waiting';
+}
+
+const formatDeadline = (date) =>
+  date.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+async function notifyEmployeeOfFlag(orgId, employeeId, reason, clockInAt) {
+  const employee = await employeeModel.findById(orgId, employeeId);
+  const deadline = new Date(clockInAt.getTime() + EXPLAIN_HOURS * 3600 * 1000);
+  await emailEach([{ email: employee?.email }], () =>
+    flagForEmployeeEmail({ firstName: employee.first_name, reason, deadline: formatDeadline(deadline), link: `${env.clientUrls[0]}/attendance` })
+  );
+}
+
+async function notifyReviewers(orgId, record, response, explanation) {
+  const reviewers = await reviewersFor(orgId, record.employee_id, 'attendance.review');
+  const employeeName = `${record.first_name} ${record.last_name}`;
+  await emailEach(reviewers, (r) =>
+    flagForManagerEmail({
+      managerName: r.name.split(' ')[0],
+      employeeName,
+      workDate: record.work_date,
+      reason: record.flag_reason,
+      response,
+      explanation,
+      link: `${env.clientUrls[0]}/attendance?tab=flagged`,
+    })
+  );
+}
+
+// The flagged clock-ins the viewer may decide on — never their own
 export async function listFlagged(auth) {
   const scope = auth.permissions['attendance.review'];
-  return attendanceModel.listFlaggedPending(auth.orgId, scopeCondition(scope, auth.employee));
+  const condition = scopeCondition(scope, auth.employee);
+  const notMe = { sql: `(${condition.sql}) AND e.id <> ?`, params: [...condition.params, auth.employee?.id ?? -1] };
+  const now = new Date();
+  const rows = await attendanceModel.listFlaggedPending(auth.orgId, notMe);
+  return rows.map((r) => ({ ...r, stage: flagStage(r, now), explain_deadline: deadlineOf(r) }));
+}
+
+// The employee's side: accept or dispute a flagged clock-in, or give a reason for being late
+export async function explain(auth, attendanceId, { response, reason }) {
+  const me = requireEmployee(auth);
+  const record = await attendanceModel.findById(auth.orgId, attendanceId);
+  if (!record || record.employee_id !== me.id) throw new AppError(404, 'Attendance record not found');
+  const existing = await explanationModel.find(record.id);
+  if (existing) throw new AppError(409, 'You have already explained this one');
+
+  const flaggedAndWaiting = record.review_status === 'pending';
+  if (flaggedAndWaiting) {
+    if (new Date() >= deadlineOf(record)) {
+      throw new AppError(409, `The ${EXPLAIN_HOURS} hours to explain have passed — it is with your manager now`);
+    }
+  } else if (record.is_late && !record.is_flagged) {
+    if (response !== 'accept') throw new AppError(422, 'For a late day, just give the reason', { response: 'Choose “That’s right”' });
+  } else {
+    throw new AppError(409, 'There is nothing to explain for this day');
+  }
+
+  await explanationModel.create({ attendanceId: record.id, orgId: auth.orgId, response, reason, respondedBy: auth.userId });
+  await auditModel.log({
+    orgId: auth.orgId,
+    userId: auth.userId,
+    action: `attendance.${response === 'dispute' ? 'disputed' : 'explained'}`,
+    entityType: 'employee',
+    entityId: me.id,
+    details: `${record.work_date}: ${reason}`,
+  });
+
+  // A flagged one is now ready for managers — tell them, with the reason
+  if (flaggedAndWaiting) {
+    const employee = await employeeModel.findById(auth.orgId, me.id);
+    await notifyReviewers(auth.orgId, { ...record, first_name: employee.first_name, last_name: employee.last_name }, response, reason);
+  }
+  return attendanceModel.findForDay(me.id, record.work_date);
+}
+
+// Run by the scheduler: flags nobody answered within 24 hours go to managers as "no response"
+export async function escalateUnansweredFlags(now = new Date()) {
+  const cutoff = new Date(now.getTime() - EXPLAIN_HOURS * 3600 * 1000);
+  const rows = await explanationModel.listUnanswered(cutoff);
+  let sent = 0;
+  for (const row of rows) {
+    // INSERT IGNORE: if two servers run this at once, only one sends the emails
+    if (await explanationModel.create({ attendanceId: row.id, orgId: row.organization_id, response: 'no_response' })) {
+      await notifyReviewers(row.organization_id, row, 'no_response', null);
+      sent += 1;
+    }
+  }
+  return sent;
 }
 
 export async function reviewFlagged(auth, attendanceId, { decision, note }) {
@@ -280,7 +396,11 @@ export async function reviewFlagged(auth, attendanceId, { decision, note }) {
   if (record.review_status !== 'pending') throw new AppError(409, 'This clock-in has already been reviewed');
   if (auth.employee && auth.employee.id === record.employee_id) throw new AppError(403, 'You cannot review your own clock-in');
 
-  await getEmployeeOrFail(auth, 'attendance.review', record.employee_id);
+  const employee = await getEmployeeOrFail(auth, 'attendance.review', record.employee_id);
+  const explanation = await explanationModel.find(record.id);
+  if (flagStage({ ...record, explanation_response: explanation?.response }) === 'waiting') {
+    throw new AppError(409, `${employee.first_name} has until ${formatDeadline(deadlineOf(record))} to explain first`);
+  }
 
   await attendanceModel.setReview(record.id, {
     status: decision,
@@ -296,5 +416,8 @@ export async function reviewFlagged(auth, attendanceId, { decision, note }) {
     entityId: record.employee_id,
     details: `Clock-in on ${record.work_date}${note ? `: ${note}` : ''}`,
   });
+  await emailEach([{ email: employee.email }], () =>
+    flagDecisionEmail({ firstName: employee.first_name, workDate: record.work_date, decision, note })
+  );
   return attendanceModel.findById(auth.orgId, attendanceId);
 }

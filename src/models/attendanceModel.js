@@ -1,10 +1,12 @@
 import { pool } from '../config/db.js';
 
 export async function findForDay(employeeId, workDate, db = pool) {
-  const [rows] = await db.query('SELECT * FROM attendance WHERE employee_id = ? AND work_date = ?', [
-    employeeId,
-    workDate,
-  ]);
+  const [rows] = await db.query(
+    `SELECT a.*, x.response AS explanation_response, x.reason AS explanation_reason, x.responded_at AS explanation_at
+       FROM attendance a LEFT JOIN attendance_explanations x ON x.attendance_id = a.id
+      WHERE a.employee_id = ? AND a.work_date = ?`,
+    [employeeId, workDate]
+  );
   return rows[0] || null;
 }
 
@@ -68,6 +70,7 @@ export async function register(orgId, workDate, scope, db = pool) {
             b.name AS branch_name, d.name AS department_name,
             a.id AS attendance_id, a.clock_in_at, a.clock_out_at, a.is_late, a.minutes_worked,
             a.is_flagged, a.flag_reason, a.review_status, a.distance_m, a.location_ok, a.wifi_ok, a.clock_in_ip,
+            (SELECT x.reason FROM attendance_explanations x WHERE x.attendance_id = a.id) AS explanation_reason,
             (SELECT lt.name FROM leave_requests lr JOIN leave_types lt ON lt.id = lr.leave_type_id
               WHERE lr.employee_id = e.id AND lr.status = 'approved' AND ? BETWEEN lr.start_date AND lr.end_date
               LIMIT 1) AS leave_type
@@ -84,10 +87,12 @@ export async function register(orgId, workDate, scope, db = pool) {
 
 export async function listFlaggedPending(orgId, scope, db = pool) {
   const [rows] = await db.query(
-    `SELECT a.*, e.first_name, e.last_name, b.name AS branch_name
+    `SELECT a.*, e.first_name, e.last_name, b.name AS branch_name,
+            x.response AS explanation_response, x.reason AS explanation_reason, x.responded_at AS explanation_at
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id
        LEFT JOIN branches b ON b.id = a.branch_id
+       LEFT JOIN attendance_explanations x ON x.attendance_id = a.id
       WHERE a.organization_id = ? AND a.review_status = 'pending' AND ${scope.sql}
       ORDER BY a.clock_in_at DESC`,
     [orgId, ...scope.params]
@@ -97,7 +102,9 @@ export async function listFlaggedPending(orgId, scope, db = pool) {
 
 export async function listForEmployee(employeeId, from, to, db = pool) {
   const [rows] = await db.query(
-    `SELECT * FROM attendance WHERE employee_id = ? AND work_date BETWEEN ? AND ? ORDER BY work_date DESC`,
+    `SELECT a.*, x.response AS explanation_response, x.reason AS explanation_reason, x.responded_at AS explanation_at
+       FROM attendance a LEFT JOIN attendance_explanations x ON x.attendance_id = a.id
+      WHERE a.employee_id = ? AND a.work_date BETWEEN ? AND ? ORDER BY a.work_date DESC`,
     [employeeId, from, to]
   );
   return rows;

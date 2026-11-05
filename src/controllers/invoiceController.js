@@ -1,5 +1,7 @@
 import asyncHandler from '../utils/asyncHandler.js';
 import * as invoiceService from '../services/invoiceService.js';
+import * as brandingService from '../services/brandingService.js';
+import { getClientIp } from '../utils/ip.js';
 import * as paymentService from '../services/paymentService.js';
 
 // GET /api/invoices?filter=unpaid&customerId=&search=&page=
@@ -63,4 +65,30 @@ export const updateSettings = asyncHandler(async (req, res) => {
 // GET /api/public/invoices/:token  (no login — the customer's view)
 export const getPublic = asyncHandler(async (req, res) => {
   res.json(await invoiceService.getPublicInvoice(req.params.token));
+});
+
+// ---------- Branding (logo, colour, signature) ----------
+// GET /api/invoices/branding
+export const getBranding = asyncHandler(async (req, res) => {
+  res.json(await brandingService.getBranding(req.auth.orgId));
+});
+
+// PUT /api/invoices/branding  { brandColor, signatoryName, signatoryTitle }
+export const updateBranding = asyncHandler(async (req, res) => {
+  res.json(await brandingService.updateBranding(req.auth, req.body));
+});
+
+// POST /api/invoices/branding/logo | /signature  (multipart, field "file")
+export const uploadBrandImage = asyncHandler(async (req, res) => {
+  res.json(await brandingService.setImage(req.auth, req.params.kind, req.file));
+});
+
+// DELETE /api/invoices/branding/logo | /signature
+export const removeBrandImage = asyncHandler(async (req, res) => {
+  res.json(await brandingService.removeImage(req.auth, req.params.kind));
+});
+
+// POST /api/public/invoices/:token/accept  { name, signature, note }  (the customer, no login)
+export const acceptPublic = asyncHandler(async (req, res) => {
+  res.status(201).json(await brandingService.acceptInvoice(req.params.token, req.body, getClientIp(req)));
 });

@@ -13,7 +13,8 @@ export const registerSchema = z.object({
   password,
   industry: optionalText(80),
   size: optionalText(20),
-  plan: z.enum(['starter', 'business', 'enterprise'], { errorMap: () => ({ message: 'Choose a plan' }) }),
+  // Only needed when billing is switched on (checked in authService.register)
+  plan: z.preprocess((v) => (v === '' || v === null ? undefined : v), z.enum(['starter', 'business', 'enterprise'], { errorMap: () => ({ message: 'Choose a plan' }) }).optional()),
 });
 
 export const loginSchema = z.object({

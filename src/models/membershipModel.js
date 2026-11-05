@@ -56,7 +56,7 @@ export async function findContext(userId, orgId, db = pool) {
     `SELECT m.user_id, m.organization_id, u.full_name,
             r.id AS role_id, r.name AS role_name, r.is_owner, r.permissions,
             e.id AS employee_id, e.branch_id, e.department_id, e.team_id,
-            s.plan AS sub_plan, s.status AS sub_status, s.current_period_end AS sub_period_end, s.is_legacy AS sub_is_legacy
+            s.plan AS sub_plan, s.status AS sub_status, s.current_period_end AS sub_period_end, s.is_legacy AS sub_is_legacy, s.created_at AS sub_created_at
        FROM memberships m
        JOIN roles r ON r.id = m.role_id
        JOIN users u ON u.id = m.user_id
@@ -84,7 +84,7 @@ export async function findContext(userId, orgId, db = pool) {
     // The organisation's plan: which features it has, its limits, and whether it has paid
     subscription: describeSubscription(
       r.sub_plan
-        ? { plan: r.sub_plan, status: r.sub_status, current_period_end: r.sub_period_end, is_legacy: r.sub_is_legacy }
+        ? { plan: r.sub_plan, status: r.sub_status, current_period_end: r.sub_period_end, is_legacy: r.sub_is_legacy, created_at: r.sub_created_at }
         : null
     ),
   };

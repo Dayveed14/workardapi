@@ -1,7 +1,12 @@
 import { pool } from '../config/db.js';
 
-export async function create(orgId, plan, db = pool) {
-  await db.query("INSERT INTO subscriptions (organization_id, plan, status) VALUES (?, ?, 'pending_payment')", [orgId, plan]);
+// A new organisation starts unpaid: on a trial (trialEnd) when billing is on,
+// or with no end date while Workard is free (its trial starts when billing is switched on)
+export async function create(orgId, plan, trialEnd, db = pool) {
+  await db.query(
+    "INSERT INTO subscriptions (organization_id, plan, status, current_period_end) VALUES (?, ?, 'trial', ?)",
+    [orgId, plan, trialEnd || null]
+  );
 }
 
 export async function find(orgId, db = pool) {

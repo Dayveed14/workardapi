@@ -36,8 +36,8 @@ export async function requireAuth(req, res, next) {
       return res.status(402).json({
         code: 'SUBSCRIPTION_REQUIRED',
         message:
-          context.subscription.status === 'pending_payment'
-            ? 'Choose a plan and pay to start using Workard'
+          context.subscription.status === 'trial_ended'
+            ? 'Your free trial has ended. The owner needs to choose a plan and pay to keep using Workard.'
             : 'Your Workard plan has expired. The owner needs to renew it.',
       });
     }

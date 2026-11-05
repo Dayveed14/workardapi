@@ -24,6 +24,10 @@ if (!process.env.ENCRYPTION_KEY) process.env.ENCRYPTION_KEY = crypto.randomBytes
 const { default: app } = await import('../src/app.js');
 const { devOutbox } = await import('../src/services/emailService.js');
 const { pool } = await import('../src/config/db.js');
+const { billing } = await import('../src/config/plans.js');
+billing.enabled = true; // test the paid flow (switched off further down to test free early access)
+billing.trialDays = 14;
+billing.startDate = null;
 
 const server = app.listen(0);
 const BASE = `http://127.0.0.1:${server.address().port}/api`;
@@ -48,10 +52,10 @@ function client() {
     const res = await fetch(BASE + path, {
       method,
       headers: {
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
         Cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; '),
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
     });
     for (const c of res.headers.getSetCookie()) {
       const [pair] = c.split(';');
@@ -95,11 +99,14 @@ try {
   r = await owner('POST', '/auth/verify-otp', { challengeToken: signupChallenge, code: codeFor(ownerEmail) });
   check('correct code logs in as Owner', r.status === 200 && r.data.role?.isOwner, r.data);
   check('owner has an employee profile', !!r.data.employee?.id, r.data);
-  check('new organisation waits for payment', r.data.subscription?.status === 'pending_payment' && r.data.subscription.plan === 'enterprise', r.data.subscription);
+  check('new organisation starts a 14-day free trial of its plan', r.data.subscription?.status === 'trial' && r.data.subscription.plan === 'enterprise' && r.data.subscription.daysLeft === 13 && r.data.subscription.usable, r.data.subscription);
+  check('the app works during the trial', (await owner('GET', '/dashboard')).status === 200);
 
   console.log('\nPaying for the plan (fake Paystack)');
+  const [[ownerOrg]] = await pool.query('SELECT organization_id FROM memberships m JOIN users u ON u.id = m.user_id WHERE u.email = ?', [ownerEmail]);
+  await pool.query('UPDATE subscriptions SET current_period_end = DATE_SUB(CURDATE(), INTERVAL 1 DAY) WHERE organization_id = ?', [ownerOrg.organization_id]);
   r = await owner('GET', '/dashboard');
-  check('app is locked until the plan is paid (402)', r.status === 402 && r.data.code === 'SUBSCRIPTION_REQUIRED', r.status);
+  check('when the trial ends the app locks until the plan is paid (402)', r.status === 402 && r.data.code === 'SUBSCRIPTION_REQUIRED' && /free trial has ended/.test(r.data.message), r.data);
   r = await owner('GET', '/billing');
   check('billing page still works while locked', r.status === 200 && r.data.plans.length === 3 && r.data.plans[2].quote.amountKobo === 100_000_000, r.data);
   r = await owner('POST', '/billing/checkout', { plan: 'enterprise' });
@@ -218,13 +225,70 @@ try {
   r = await staff('POST', '/me/attendance/clock-in', {});
   check('cannot clock in twice', r.status === 409);
 
+  r = await staff('GET', '/me/attendance/today');
+  check('today’s card lists the clock-in to explain', r.data.toExplain?.length === 1 && !!r.data.toExplain[0].explain_deadline, r.data.toExplain);
+  check('employee is emailed to explain within 24 hours', /explain within 24 hours/.test(lastEmail(staffEmail)?.subject), lastEmail(staffEmail));
+
   r = await sup('GET', '/attendance/flagged');
   const flaggedRecord = r.data.find?.((a) => a.employee_id === staffId);
-  check('supervisor sees the flagged clock-in', !!flaggedRecord, r.data);
+  check('supervisor sees the flagged clock-in, waiting for the employee', flaggedRecord?.stage === 'waiting' && !!flaggedRecord.explain_deadline, flaggedRecord);
   r = await staff('PATCH', `/attendance/${flaggedRecord.id}/review`, { decision: 'approved' });
   check('employee cannot review clock-ins', r.status === 403);
+  r = await sup('PATCH', `/attendance/${flaggedRecord.id}/review`, { decision: 'approved' });
+  check('managers wait for the employee’s side first', r.status === 409 && /has until/.test(r.data.message), r.data);
+
+  r = await staff('POST', `/me/attendance/${flaggedRecord.id}/explanation`, { response: 'maybe', reason: 'x' });
+  check('explanation needs accept/dispute and a reason', r.status === 422, r.data);
+  r = await sup('POST', `/me/attendance/${flaggedRecord.id}/explanation`, { response: 'accept', reason: 'Not mine to explain' });
+  check('nobody else can explain your clock-in', r.status === 404, r.data);
+  r = await staff('POST', `/me/attendance/${flaggedRecord.id}/explanation`, { response: 'dispute', reason: 'I was at the Wuse client site all morning' });
+  check('employee disputes with a reason', r.status === 200 && r.data.explanation_response === 'dispute' && /Wuse/.test(r.data.explanation_reason), r.data);
+  r = await staff('POST', `/me/attendance/${flaggedRecord.id}/explanation`, { response: 'accept', reason: 'Changed my mind' });
+  check('only one explanation per clock-in', r.status === 409, r.data);
+  check('supervisor is emailed the explanation', /Flagged clock-in to review: Chidi Eze/.test(lastEmail(supEmail)?.subject) && /Wuse/.test(lastEmail(supEmail)?.text), lastEmail(supEmail));
+  check('owner is emailed too (scope covers everyone)', /Flagged clock-in to review/.test(lastEmail(ownerEmail)?.subject), lastEmail(ownerEmail));
+  r = await staff('GET', '/me/attendance/today');
+  check('employee sees their explanation on today’s card', r.data.record?.explanation_response === 'dispute' && r.data.toExplain.length === 0, r.data);
+
+  r = await sup('GET', '/attendance/flagged');
+  const ready = r.data.find?.((a) => a.id === flaggedRecord.id);
+  check('now ready for a decision, with the reason beside it', ready?.stage === 'ready' && /Wuse/.test(ready.explanation_reason), ready);
   r = await sup('PATCH', `/attendance/${flaggedRecord.id}/review`, { decision: 'approved', note: 'Was at a client site' });
   check('supervisor approves it', r.status === 200 && r.data.review_status === 'approved', r.data);
+  check('employee is emailed the decision', /was accepted/.test(lastEmail(staffEmail)?.subject), lastEmail(staffEmail));
+
+  // A supervisor's own flag is never in their review list
+  r = await sup('POST', '/me/attendance/clock-in', { latitude: 9.2, longitude: 7.6, accuracy: 20 });
+  check('supervisor’s own clock-in is flagged', r.data.record?.is_flagged === 1 && r.data.record?.review_status === 'pending', r.data.record);
+  const supFlagId = r.data.record.id;
+  r = await sup('GET', '/attendance/flagged');
+  check('your own flags are not in your review list', !r.data.some((a) => a.id === supFlagId), r.data);
+  r = await owner('GET', '/attendance/flagged');
+  check('the owner sees the supervisor’s flag', r.data.some((a) => a.id === supFlagId), r.data);
+
+  // The owner has nobody above them: their flag is accepted straight away
+  const [[ownerEmp]] = await pool.query('SELECT id, branch_id FROM employees WHERE email = ?', [ownerEmail]);
+  await owner('PATCH', `/employees/${ownerEmp.id}`, { branchId });
+  r = await owner('POST', '/me/attendance/clock-in', { latitude: 9.2, longitude: 7.6, accuracy: 20 });
+  check('owner’s flagged clock-in needs no review', r.data.record?.is_flagged === 1 && r.data.record?.review_status === 'approved', r.data.record);
+  const ownerFlagId = r.data.record?.id;
+  r = await owner('GET', '/attendance/flagged');
+  check('owner’s own flag is not waiting anywhere', !r.data.some((a) => a.id === ownerFlagId), r.data);
+  await pool.query('UPDATE employees SET branch_id = ? WHERE id = ?', [ownerEmp.branch_id, ownerEmp.id]);
+
+  // Nobody answers within 24 hours → managers get it as "no response"
+  await pool.query("UPDATE attendance SET clock_in_at = clock_in_at - INTERVAL 25 HOUR WHERE id = ?", [supFlagId]);
+  r = await sup('POST', `/me/attendance/${supFlagId}/explanation`, { response: 'accept', reason: 'Too late now' });
+  check('after 24 hours the employee can no longer explain', r.status === 409 && /hours to explain have passed/.test(r.data.message), r.data);
+  r = await owner('GET', '/attendance/flagged');
+  check('after 24 hours it is ready for the owner', r.data.find((a) => a.id === supFlagId)?.stage === 'ready', r.data);
+  const { escalateUnansweredFlags } = await import('../src/services/attendanceService.js');
+  const escalated = await escalateUnansweredFlags();
+  check('the daily job sends unanswered flags on as “no response”', escalated >= 1, escalated);
+  check('owner is told the supervisor did not respond', /did not respond within 24 hours/.test(lastEmail(ownerEmail)?.text) && /Bola Ade/.test(lastEmail(ownerEmail)?.subject), lastEmail(ownerEmail));
+  check('…and only once', (await escalateUnansweredFlags()) === 0);
+  r = await owner('PATCH', `/attendance/${supFlagId}/review`, { decision: 'rejected', note: 'No reason given' });
+  check('owner rejects it', r.status === 200 && r.data.review_status === 'rejected', r.data);
 
   r = await staff('POST', '/me/attendance/clock-out');
   check('clock out', r.status === 200 && r.data.record?.clock_out_at, r.data);
@@ -329,10 +393,68 @@ try {
   r = await anon('GET', `/public/invoices/${token}`);
   check('customer can open the public link without logging in', r.status === 200 && r.data.total_kobo === 32518804, r.data);
   check('public link hides internal fields', r.data.organization_id === undefined && r.data.id === undefined && r.data.items?.length === 2);
+
+  console.log('\nInvoice branding & customer acceptance');
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  r = await owner('PUT', '/invoices/branding', { brandColor: 'blue', signatoryName: 'Ada Okafor' });
+  check('brand colour must be a hex colour', r.status === 422, r.data);
+  r = await owner('PUT', '/invoices/branding', { brandColor: '#7c3aed', signatoryName: 'Ada Okafor', signatoryTitle: 'Managing Director' });
+  check('save brand colour and signatory', r.status === 200 && r.data.brandColor === '#7c3aed' && r.data.signatoryTitle === 'Managing Director', r.data);
+  const logoForm = new FormData();
+  logoForm.append('file', new Blob([Buffer.from(PNG, 'base64')], { type: 'image/png' }), 'logo.png');
+  r = await owner('POST', '/invoices/branding/logo', logoForm);
+  check('upload a logo (kept in the database without Cloudinary in development)', r.status === 200 && r.data.logoUrl?.startsWith('data:image/png;base64,'), r.data);
+  const sigForm = new FormData();
+  sigForm.append('file', new Blob([Buffer.from(PNG, 'base64')], { type: 'image/png' }), 'signature.png');
+  r = await owner('POST', '/invoices/branding/signature', sigForm);
+  check('add the business signature', r.status === 200 && !!r.data.signatureUrl, r.data);
+  r = await staff('PUT', '/invoices/branding', { brandColor: '#000000' });
+  check('only finance managers change branding', r.status === 403, r.data);
+  r = await anon('GET', `/public/invoices/${token}`);
+  check('the public invoice shows the logo, colour and signature', r.data.business?.logoUrl && r.data.business.brandColor === '#7c3aed' && r.data.business.signatoryName === 'Ada Okafor' && r.data.acceptance === null, r.data.business);
+
+  r = await anon('POST', `/public/invoices/${token}/accept`, { name: 'Zainab Bello', signature: 'not-a-picture' });
+  check('acceptance needs a drawn signature', r.status === 422 && r.data.errors?.signature, r.data);
+  r = await anon('POST', `/public/invoices/${token}/accept`, { name: 'Zainab Bello', signature: `data:image/png;base64,${PNG}`, note: 'Please deliver before Friday' });
+  check('customer accepts and signs with a note', r.status === 201 && r.data.name === 'Zainab Bello' && r.data.note === 'Please deliver before Friday', r.data);
+  r = await anon('POST', `/public/invoices/${token}/accept`, { name: 'Someone Else', signature: `data:image/png;base64,${PNG}` });
+  check('an invoice is accepted only once', r.status === 409, r.data);
+  check('whoever sent the invoice is emailed', /Zenith Foods Ltd accepted invoice INV-0001/.test(lastEmail(ownerEmail)?.subject) && /before Friday/.test(lastEmail(ownerEmail)?.text), lastEmail(ownerEmail));
+  r = await owner('GET', `/invoices/${inv1}`);
+  check('the invoice in the app shows the acceptance', r.data.acceptance?.name === 'Zainab Bello' && r.data.acceptance.signature.startsWith('data:image/png') && r.data.business.brandColor === '#7c3aed', r.data.acceptance);
+  r = await owner('DELETE', '/invoices/branding/logo');
+  check('remove the logo', r.status === 200 && r.data.logoUrl === null, r.data);
   r = await owner('GET', `/invoices/${inv1}`);
   check('invoice shows as viewed and customer promoted', r.data.viewed_at && r.data.status === 'sent', r.data);
   r = await owner('GET', `/customers/${custA}`);
   check('lead became a customer when invoiced', r.data.stage === 'customer', r.data.stage);
+
+  console.log('\nSales pipeline (stages, lost deals, conversion)');
+  r = await owner('POST', '/customers', { name: 'Lost Deal Ltd', stage: 'prospect', source: 'Referral' });
+  const lostId = r.data.id;
+  r = await owner('PATCH', `/customers/${lostId}`, { stage: 'lost' });
+  check('a deal can be marked lost', r.status === 200 && r.data.stage === 'lost', r.data);
+  await owner('PATCH', `/customers/${lostId}`, { stage: 'lost', notes: 'Went with a competitor' });
+  r = await owner('GET', `/customers/${custA}/stages`);
+  check('stage history is kept (lead → customer when invoiced)', r.data.length === 2 && r.data[0].to_stage === 'lead' && r.data[1].from_stage === 'lead' && r.data[1].to_stage === 'customer', r.data);
+  r = await owner('GET', `/customers/${lostId}/stages`);
+  check('saving without changing the stage adds no history', r.data.length === 2, r.data);
+  r = await staff('GET', `/customers/${custC}/stages`);
+  check('stage history follows the customer scope', r.status === 404, r.data);
+
+  r = await owner('GET', '/customers');
+  check('list comes with a count per stage', r.data.stageCounts?.customer === 1 && r.data.stageCounts?.lost === 1 && r.data.stageCounts?.lead === 3, r.data.stageCounts);
+  r = await staff('GET', '/customers');
+  check('stage counts follow the scope', r.data.stageCounts?.customer === 1 && r.data.stageCounts?.lead === 1 && !r.data.stageCounts?.lost, r.data.stageCounts);
+
+  r = await owner('GET', '/customers/sales?months=6');
+  const s = r.data;
+  check('sales funnel: 5 leads → 2 prospects → 1 customer, 1 lost', s.funnel?.leads === 5 && s.funnel.prospects === 2 && s.funnel.customers === 1 && s.funnel.lost === 1 && s.funnel.open === 3, s.funnel);
+  check('win rate = won ÷ (won + lost) = 50%; lead → customer 20%', s.winRate === 50 && s.conversion === 20 && s.totals.won === 1 && s.totals.lost === 1, s);
+  check('six months, this month has the activity', s.months?.length === 6 && s.months.at(-1).newLeads === 5 && s.months.at(-1).won === 1, s.months);
+  check('conversion by lead source', s.sources?.find((x) => x.source === 'Referral')?.lost === 1 && s.sources.find((x) => x.source === 'Not recorded')?.customers === 1, s.sources);
+  r = await staff('GET', '/customers/sales');
+  check('sales numbers follow the scope (staff sees their own pipeline)', r.status === 200 && r.data.funnel.leads === 2 && r.data.funnel.customers === 1, r.data.funnel);
 
   console.log('\nPayments (idempotency, locking, no overpayment)');
   const reqId = `req-${stamp}-1`;
@@ -846,6 +968,31 @@ try {
   await pool.query('DELETE FROM subscriptions WHERE organization_id = ?', [r.data.organization.id]);
   r = await legacy('GET', '/auth/me');
   check('organisation from before plans: full access, no payment', r.data.subscription.isLegacy && r.data.subscription.status === 'active' && (await legacy('GET', '/payroll')).status === 200, r.data.subscription);
+
+  console.log('\nBilling switched off (free early access)');
+  billing.enabled = false;
+  const freeCo = client();
+  const freeEmail = `free${stamp}@test.ng`;
+  r = await freeCo('GET', '/billing/config');
+  check('sign-up page can see billing is off', r.data.enabled === false, r.data);
+  r = await freeCo('POST', '/auth/register', { fullName: 'Free Rider', organizationName: 'Free Co', email: freeEmail, password: 'secret123' });
+  check('sign up needs no plan while billing is off', r.status === 201, r.data);
+  r = await freeCo('POST', '/auth/verify-otp', { challengeToken: r.data.challengeToken, code: codeFor(freeEmail) });
+  check('free organisation gets everything', r.data.subscription.status === 'free' && r.data.subscription.usable && r.data.subscription.features.includes('payroll'), r.data.subscription);
+  check('…and can use paid features', (await freeCo('GET', '/payroll')).status === 200 && (await freeCo('GET', '/tasks')).status === 200);
+  r = await freeCo('GET', '/billing');
+  check('nothing to pay while free', r.data.plans.every((p) => p.quote.allowed === false), r.data.plans);
+  r = await small('GET', '/auth/me');
+  check('organisations that already paid keep their plan', r.data.subscription.status === 'active' && r.data.subscription.plan === 'starter', r.data.subscription);
+
+  billing.enabled = true; // switched on: free organisations get their trial from BILLING_START_DATE
+  billing.startDate = new Date().toISOString().slice(0, 10);
+  r = await freeCo('GET', '/auth/me');
+  check('switching billing on gives free organisations a trial from the start date', r.data.subscription.status === 'trial' && r.data.subscription.daysLeft === 13, r.data.subscription);
+  billing.startDate = '2026-01-01';
+  r = await freeCo('GET', '/auth/me');
+  check('…but never before they signed up', r.data.subscription.status === 'trial' && r.data.subscription.daysLeft === 13, r.data.subscription);
+  billing.startDate = null;
 
   console.log('\nMonthly attendance adherence & holidays');
   const { monthAdherence } = await import('../src/utils/adherence.js');

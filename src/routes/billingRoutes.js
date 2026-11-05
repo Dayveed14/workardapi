@@ -9,6 +9,7 @@ import { checkoutSchema, verifySchema } from '../validators/billingSchemas.js';
 const router = Router();
 
 router.get('/plans', billingController.plans); // public: the sign-up page shows the plans
+router.get('/config', billingController.config); // public: is billing on? trial length
 
 router.use(requireAuth);
 router.get('/', billingController.overview);

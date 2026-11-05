@@ -6,6 +6,11 @@ export const plans = asyncHandler(async (req, res) => {
   res.json(billingService.listPlans());
 });
 
+// GET /api/billing/config  (public: is billing switched on, how long is the trial)
+export const config = asyncHandler(async (req, res) => {
+  res.json(billingService.getConfig());
+});
+
 // GET /api/billing  (current plan, prices, what an upgrade would cost, payment history)
 export const overview = asyncHandler(async (req, res) => {
   res.json(await billingService.getBilling(req.auth));

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requirePermission, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { uploadImage } from '../middleware/upload.js';
 import * as invoiceController from '../controllers/invoiceController.js';
 import {
   invoiceSchema,
@@ -9,6 +10,7 @@ import {
   sendInvoiceSchema,
   paymentSchema,
   invoiceSettingsSchema,
+  brandingSchema,
 } from '../validators/invoiceSchemas.js';
 
 const router = Router();
@@ -21,6 +23,10 @@ const payments = requirePermission('invoices.payments');
 // Fixed paths first (before "/:id")
 router.get('/settings', view, invoiceController.getSettings);
 router.put('/settings', requirePermission('finance.manage'), validate(invoiceSettingsSchema), invoiceController.updateSettings);
+router.get('/branding', view, invoiceController.getBranding);
+router.put('/branding', requirePermission('finance.manage'), validate(brandingSchema), invoiceController.updateBranding);
+router.post('/branding/:kind(logo|signature)', requirePermission('finance.manage'), uploadImage, invoiceController.uploadBrandImage);
+router.delete('/branding/:kind(logo|signature)', requirePermission('finance.manage'), invoiceController.removeBrandImage);
 router.delete('/payments/:paymentId', payments, invoiceController.removePayment);
 
 router.get('/', view, validate(listInvoicesSchema, 'query'), invoiceController.list);

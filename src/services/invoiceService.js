@@ -9,6 +9,8 @@ import { sendEmail, invoiceEmail } from './emailService.js';
 import { randomToken } from './tokenService.js';
 import { calculateTotals, formatNaira } from '../utils/money.js';
 import { toDateString, addDays, formatDateLong } from '../utils/dates.js';
+import * as brandingModel from '../models/brandingModel.js';
+import * as brandingService from './brandingService.js';
 import AppError from '../utils/AppError.js';
 
 const today = () => toDateString();
@@ -44,17 +46,20 @@ async function getInvoiceOrFail(orgId, id) {
 // Invoice + its lines, payments, and what prints on it (business name, bank details)
 export async function getInvoice(auth, id) {
   const invoice = await getInvoiceOrFail(auth.orgId, id);
-  const [items, payments, settings, organization] = await Promise.all([
+  const [items, payments, settings, organization, branding, acceptance] = await Promise.all([
     invoiceModel.getItems(invoice.id),
     paymentModel.listByInvoice(auth.orgId, invoice.id),
     invoiceModel.getSettings(auth.orgId),
     organizationModel.findById(auth.orgId),
+    brandingModel.find(auth.orgId),
+    brandingModel.findAcceptance(invoice.id),
   ]);
   return {
     ...invoice,
     items,
     payments,
-    business: { name: organization.name, ...pickBank(settings) },
+    business: { name: organization.name, ...pickBank(settings), ...brandingService.brandOf(branding) },
+    acceptance: brandingService.acceptanceOf(acceptance),
     publicUrl: invoice.public_token ? `${env.clientUrls[0]}/i/${invoice.public_token}` : null,
   };
 }
@@ -150,7 +155,7 @@ export async function sendInvoice(auth, id, { channel }) {
     status: invoice.status === 'draft' ? 'sent' : invoice.status,
   });
   if (['lead', 'prospect'].includes((await customerModel.findById(auth.orgId, invoice.customer_id))?.stage)) {
-    await customerModel.update(auth.orgId, invoice.customer_id, { stage: 'customer' });
+    await customerModel.setStage(auth.orgId, invoice.customer_id, 'customer', auth.userId);
   }
 
   const organization = await organizationModel.findById(auth.orgId);
@@ -168,6 +173,7 @@ export async function sendInvoice(auth, id, { channel }) {
         amount: balance,
         dueDate: dueText,
         link: publicUrl,
+        ...(await brandingService.getBranding(auth.orgId)), // logo + colour
       }),
     });
   }
@@ -216,10 +222,12 @@ export async function getPublicInvoice(token) {
   if (!invoice) throw new AppError(404, 'Invoice not found');
   await invoiceModel.markViewed(invoice.id, new Date());
 
-  const [items, settings, organization] = await Promise.all([
+  const [items, settings, organization, branding, acceptance] = await Promise.all([
     invoiceModel.getItems(invoice.id),
     invoiceModel.getSettings(invoice.organization_id),
     organizationModel.findById(invoice.organization_id),
+    brandingModel.find(invoice.organization_id),
+    brandingModel.findAcceptance(invoice.id),
   ]);
 
   // Only what the customer should see — no internal ids or notes about staff
@@ -247,6 +255,7 @@ export async function getPublicInvoice(token) {
       unit_price_kobo,
       line_total_kobo,
     })),
-    business: { name: organization.name, ...pickBank(settings) },
+    business: { name: organization.name, ...pickBank(settings), ...brandingService.brandOf(branding) },
+    acceptance: brandingService.acceptanceOf(acceptance),
   };
 }

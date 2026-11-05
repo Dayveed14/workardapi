@@ -9,12 +9,15 @@
 //   3. creates invoice settings and finance categories if missing
 //   4. creates review settings and default review criteria if missing
 //   5. organisations from before plans existed get full access (legacy Enterprise, no end date)
+//   6. customers added before stage history get a starting row (for the sales dashboard)
+//   7. the owner's own flagged clock-ins are approved (nobody is above them to review)
 // Safe to run as many times as you like.
 // ============================================================
 import 'dotenv/config';
 import { pool } from '../src/config/db.js';
 import { ensureDefaults as ensureReviewDefaults } from '../src/models/reviewModel.js';
 import { ensureDefaults as ensureOnboardingDefaults } from '../src/models/onboardingModel.js';
+import { backfill as backfillStages } from '../src/models/salesModel.js';
 import { ensureLegacy } from '../src/models/subscriptionModel.js';
 import { DEFAULT_ROLES, PERMISSION_KEYS, DEFAULT_FINANCE_CATEGORIES } from '../src/config/permissions.js';
 
@@ -52,9 +55,19 @@ for (const org of orgs) {
 
   await ensureReviewDefaults(org.id);
   await ensureOnboardingDefaults(org.id);
+  await backfillStages(org.id);
+  const [ownerFlags] = await pool.query(
+    `UPDATE attendance a
+       JOIN employees e ON e.id = a.employee_id
+       JOIN memberships m ON m.user_id = e.user_id AND m.organization_id = e.organization_id
+       JOIN roles r ON r.id = m.role_id AND r.is_owner = 1
+        SET a.review_status = 'approved', a.review_note = 'Owner — no review needed', a.reviewed_at = NOW()
+      WHERE a.organization_id = ? AND a.review_status = 'pending'`,
+    [org.id]
+  );
   const legacy = await ensureLegacy(org.id); // only adds a row if the organisation has none
 
-  console.log(`✔ ${org.name}: ${updated} role(s) updated, invoice/finance/review/onboarding defaults ready${legacy ? ' · kept full access (created before plans)' : ''}`);
+  console.log(`✔ ${org.name}: ${updated} role(s) updated, invoice/finance/review/onboarding defaults ready${ownerFlags.affectedRows ? ` · ${ownerFlags.affectedRows} owner flag(s) approved` : ''}${legacy ? ' · kept full access (created before plans)' : ''}`);
 }
 
 await pool.end();

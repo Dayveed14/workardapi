@@ -75,11 +75,17 @@ export function inviteEmail({ organizationName, firstName, link }) {
   };
 }
 
-export function invoiceEmail({ businessName, customerName, invoiceNumber, amount, dueDate, link }) {
+export function invoiceEmail({ businessName, customerName, invoiceNumber, amount, dueDate, link, logoUrl, brandColor }) {
+  // The business's own logo (only a real https link — email apps block data: images) and colour
+  const logo = logoUrl?.startsWith('https://')
+    ? `<p style="margin:0 0 18px"><img src="${esc(logoUrl)}" alt="${esc(businessName)}" style="max-height:56px;max-width:200px"></p>`
+    : '';
+  const colour = /^#[0-9a-f]{6}$/i.test(brandColor || '') ? brandColor : '#2563eb';
   return {
     subject: `Invoice ${invoiceNumber} from ${businessName}`,
     text: `Hello ${customerName}, ${businessName} has sent you invoice ${invoiceNumber} for ${amount}, due ${dueDate}. View it here: ${link}`,
     html: layout(`
+      ${logo}
       <p>Hello ${esc(customerName)},</p>
       <p><strong>${esc(businessName)}</strong> has sent you invoice <strong>${esc(invoiceNumber)}</strong>.</p>
       <table style="width:100%;margin:20px 0;border-collapse:collapse">
@@ -87,7 +93,7 @@ export function invoiceEmail({ businessName, customerName, invoiceNumber, amount
         <tr><td style="padding:8px 0;color:#64748b">Due date</td><td style="padding:8px 0;text-align:right">${dueDate}</td></tr>
       </table>
       <p style="margin:28px 0">
-        <a href="${link}" style="background:#2563eb;color:#ffffff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:bold">View invoice</a>
+        <a href="${link}" style="background:${colour};color:#ffffff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:bold">View invoice</a>
       </p>
       <p style="color:#64748b">Payment details are on the invoice.</p>`),
   };
@@ -177,5 +183,61 @@ export function onboardingEmail({ firstName, businessName, itemCount, hasLogin, 
       <p>Welcome to <strong>${esc(businessName)}</strong>! We’ve prepared <strong>${itemCount} onboarding steps</strong> to help you settle in.</p>
       <p>${next}</p>
       ${button(link, 'Open my checklist')}`),
+  };
+}
+
+// ---------- Flagged clock-ins ----------
+export function flagForEmployeeEmail({ firstName, reason, deadline, link }) {
+  return {
+    subject: 'Your clock-in was flagged — please explain within 24 hours',
+    text: `Hi ${firstName}, your clock-in today was flagged: ${reason}. Accept or dispute it with a short reason before ${deadline}, then it goes to your manager. ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p>Your clock-in today was flagged:</p>
+      <p style="padding:10px 14px;background:#fffbeb;border-radius:8px;color:#92400e">${esc(reason)}</p>
+      <p>Please <strong>accept or dispute</strong> it with a short reason before <strong>${esc(deadline)}</strong>. After that it goes to your manager for a decision.</p>
+      ${button(link, 'Explain now')}`),
+  };
+}
+
+export function flagForManagerEmail({ managerName, employeeName, workDate, reason, response, explanation, link }) {
+  const said = {
+    accept: `${employeeName} accepted the flag and explained:`,
+    dispute: `${employeeName} disputes the flag:`,
+    no_response: `${employeeName} did not respond within 24 hours.`,
+  }[response];
+  return {
+    subject: `Flagged clock-in to review: ${employeeName} (${workDate})`,
+    text: `Hi ${managerName}, ${employeeName}'s clock-in on ${workDate} was flagged (${reason}). ${said} ${explanation || ''} Review it: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(managerName)},</p>
+      <p><strong>${esc(employeeName)}</strong>'s clock-in on ${esc(workDate)} was flagged: ${esc(reason)}.</p>
+      <p>${esc(said)}</p>
+      ${explanation ? `<p style="padding:10px 14px;background:#f1f5f9;border-radius:8px">“${esc(explanation)}”</p>` : ''}
+      ${button(link, 'Review clock-in')}`),
+  };
+}
+
+export function flagDecisionEmail({ firstName, workDate, decision, note }) {
+  const approved = decision === 'approved';
+  return {
+    subject: approved ? `Your clock-in on ${workDate} was accepted` : `Your clock-in on ${workDate} was rejected`,
+    text: `Hi ${firstName}, your flagged clock-in on ${workDate} was ${decision}.${note ? ` Note: ${note}` : ''}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p>Your flagged clock-in on <strong>${esc(workDate)}</strong> was <strong>${approved ? 'accepted — it counts as present' : 'rejected — it counts as absent'}</strong>.</p>
+      ${note ? `<p style="color:#64748b">Note from your manager: ${esc(note)}</p>` : ''}`),
+  };
+}
+
+export function invoiceAcceptedEmail({ firstName, businessName, invoiceNumber, customerName, signerName, note, link }) {
+  return {
+    subject: `${customerName} accepted invoice ${invoiceNumber}`,
+    text: `Hi ${firstName}, ${signerName} (${customerName}) accepted and signed invoice ${invoiceNumber} from ${businessName}.${note ? ` Their note: "${note}"` : ''} View it: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p><strong>${esc(signerName)}</strong> (${esc(customerName)}) accepted and signed invoice <strong>${esc(invoiceNumber)}</strong>.</p>
+      ${note ? `<p style="padding:10px 14px;background:#f1f5f9;border-radius:8px">“${esc(note)}”</p>` : ''}
+      ${button(link, 'View invoice')}`),
   };
 }

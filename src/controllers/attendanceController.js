@@ -43,3 +43,8 @@ export const myHistory = asyncHandler(async (req, res) => {
 export const monthly = asyncHandler(async (req, res) => {
   res.json(await attendanceService.getMonthly(req.auth, req.scope, req.validatedQuery.month));
 });
+
+// POST /api/me/attendance/:id/explanation  { response: 'accept' | 'dispute', reason }
+export const explain = asyncHandler(async (req, res) => {
+  res.json(await attendanceService.explain(req.auth, req.params.id, req.body));
+});

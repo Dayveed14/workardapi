@@ -31,3 +31,9 @@ export const leaveRequestSchema = z.object({
 export const leaveListSchema = z.object({
   status: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['pending', 'approved', 'rejected', 'cancelled']).optional()),
 });
+
+// The employee's side of a flagged clock-in (or the reason for a late day)
+export const explanationSchema = z.object({
+  response: z.enum(['accept', 'dispute'], { errorMap: () => ({ message: 'Choose whether the flag is right' }) }),
+  reason: z.string().trim().min(5, 'Tell us what happened (at least a few words)').max(1000),
+});

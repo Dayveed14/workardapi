@@ -1,4 +1,5 @@
 import * as employeeModel from '../models/employeeModel.js';
+import { listFlagged } from './attendanceService.js';
 import * as attendanceModel from '../models/attendanceModel.js';
 import * as leaveModel from '../models/leaveModel.js';
 import * as customerModel from '../models/customerModel.js';
@@ -31,9 +32,8 @@ export async function getDashboard(auth, scope) {
     leaveScope ? leaveModel.countPending(auth.orgId, scopeCondition(leaveScope, auth.employee)) : 0,
   ]);
 
-  const flaggedForMe = reviewScope
-    ? (await attendanceModel.listFlaggedPending(auth.orgId, scopeCondition(reviewScope, auth.employee))).length
-    : 0;
+  // Only flags ready for a decision (explained, or 24 hours passed) — never your own
+  const flaggedForMe = reviewScope ? (await listFlagged(auth)).filter((f) => f.stage === 'ready').length : 0;
 
   return {
     date: today,

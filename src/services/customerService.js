@@ -1,3 +1,4 @@
+import * as salesModel from '../models/salesModel.js';
 import * as customerModel from '../models/customerModel.js';
 import * as interactionModel from '../models/interactionModel.js';
 import * as employeeModel from '../models/employeeModel.js';
@@ -40,7 +41,9 @@ export async function listCustomers(auth, scope, query) {
     limit,
     offset: (page - 1) * limit,
   });
-  return { customers: rows, total, page, pages: Math.max(1, Math.ceil(total / limit)) };
+  // How many in each stage (whole scope, ignoring the search) — for the stage chips
+  const stageCounts = await customerModel.countByStage(auth.orgId, scopeCondition(scope, auth.employee));
+  return { customers: rows, total, page, pages: Math.max(1, Math.ceil(total / limit)), stageCounts };
 }
 
 export async function getCustomer(auth, id) {
@@ -56,19 +59,21 @@ export async function createCustomer(auth, data) {
   const requested = data.assignedEmployeeId || auth.employee?.id || null;
   const assignedEmployeeId = await resolveAssignee(auth, requested);
   const id = await customerModel.create(auth.orgId, { ...data, assignedEmployeeId, createdBy: auth.userId });
+  await salesModel.recordChange({ orgId: auth.orgId, customerId: id, toStage: data.stage || 'lead', changedBy: auth.userId });
   await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'customer.created', entityType: 'customer', entityId: id, details: data.name });
   return customerModel.findById(auth.orgId, id);
 }
 
 export async function updateCustomer(auth, id, data) {
   const customer = await getCustomerOrFail(auth, 'customers.manage', id);
-  const changes = { ...data };
+  const { stage, ...changes } = data;
 
   if (data.assignedEmployeeId !== undefined && data.assignedEmployeeId !== customer.assigned_employee_id) {
     changes.assignedEmployeeId = await resolveAssignee(auth, data.assignedEmployeeId);
   }
 
   await customerModel.update(auth.orgId, id, changes);
+  if (stage) await customerModel.setStage(auth.orgId, id, stage, auth.userId); // keeps the stage history
   await auditModel.log({
     orgId: auth.orgId,
     userId: auth.userId,

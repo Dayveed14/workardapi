@@ -8,11 +8,12 @@ import * as employeeModel from '../models/employeeModel.js';
 import * as refreshTokenModel from '../models/refreshTokenModel.js';
 import * as auditModel from '../models/auditModel.js';
 import * as subscriptionModel from '../models/subscriptionModel.js';
+import { billing } from '../config/plans.js';
 import * as otpService from './otpService.js';
 import * as tokenService from './tokenService.js';
 import { seedOrganization } from './organizationService.js';
 import { setAuthCookies, clearAuthCookies, REFRESH_COOKIE } from '../utils/cookies.js';
-import { toDateString } from '../utils/dates.js';
+import { toDateString, addDays } from '../utils/dates.js';
 import { getClientIp } from '../utils/ip.js';
 import AppError from '../utils/AppError.js';
 
@@ -89,6 +90,7 @@ export async function register({ fullName, organizationName, email, phone, passw
     });
   }
 
+  if (billing.enabled && !plan) throw new AppError(422, 'Choose a plan', { plan: 'Choose a plan' });
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
   const userId = await withTransaction(async (db) => {
@@ -96,8 +98,9 @@ export async function register({ fullName, organizationName, email, phone, passw
     const orgId = await organizationModel.create({ name: organizationName, industry, size }, db);
     const { ownerRoleId, branchId } = await seedOrganization(orgId, db);
     await membershipModel.create({ userId: newUserId, orgId, roleId: ownerRoleId }, db);
-    // The chosen plan, unpaid until the owner pays on Paystack (the app stays locked till then)
-    await subscriptionModel.create(orgId, plan, db);
+    // Billing on: a free trial of the chosen plan. Billing off: free (no plan needed yet).
+    const trialEnd = billing.enabled ? addDays(toDateString(), billing.trialDays - 1) : null;
+    await subscriptionModel.create(orgId, billing.enabled ? plan : 'enterprise', trialEnd, db);
 
     // The owner is also an employee (so they can clock in, appear in the directory, etc.)
     const [firstName, ...rest] = fullName.trim().split(/\s+/);
