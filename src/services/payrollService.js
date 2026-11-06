@@ -115,7 +115,8 @@ function computeItem(row, settings, days, adjustments = {}, repayments = []) {
 }
 
 // Builds every payslip for the run. Keeps any bonus / one-off deduction already entered.
-async function buildItems(orgId, run, db) {
+// copied: { employeeId: { bonus, oneOffDeduction } } from an earlier month (only on create)
+async function buildItems(orgId, run, db, copied = null) {
   const settings = settingsForCalc(await payrollSettingsModel.get(orgId, db));
   const { from, to } = monthRange(run.period);
   const [rows, unpaidLeave, existing, repayments] = await Promise.all([
@@ -125,9 +126,7 @@ async function buildItems(orgId, run, db) {
     repaymentLines(orgId, db), // salary advances & staff loans being repaid
   ]);
 
-  const kept = Object.fromEntries(
-    existing.map((i) => [i.employee_id, { bonus: Number(i.bonus_kobo), oneOffDeduction: Number(i.one_off_deduction_kobo) }])
-  );
+  const kept = copied || adjustmentsOf(existing);
 
   await payrollRunModel.deleteItems(run.id, db);
   for (const row of rows) {
@@ -135,6 +134,12 @@ async function buildItems(orgId, run, db) {
     await payrollRunModel.createItem(orgId, run.id, row.employee_id, computeItem(row, settings, days, kept[row.employee_id], repayments[row.employee_id]), db);
   }
   await payrollRunModel.refreshTotals(run.id, db);
+}
+
+function adjustmentsOf(items) {
+  return Object.fromEntries(
+    items.map((i) => [i.employee_id, { bonus: Number(i.bonus_kobo), oneOffDeduction: Number(i.one_off_deduction_kobo) }])
+  );
 }
 
 // ---------- Runs ----------
@@ -167,7 +172,10 @@ function canApprove(auth, run) {
   return Boolean(auth.permissions['payroll.approve']) && (run.prepared_by !== auth.userId || auth.role.isOwner);
 }
 
-export async function createRun(auth, { period }) {
+// Salaries, bank, TIN and pension details live on each employee's Pay tab, so every
+// month already starts from them. "Copy from" also brings over an earlier month's
+// bonuses and one-off deductions (people who have left are simply skipped).
+export async function createRun(auth, { period, copyFrom }) {
   const id = await withTransaction(async (db) => {
     // Lock this organisation's payroll so two people can't create the same month twice
     await payrollSettingsModel.ensure(auth.orgId, db);
@@ -176,8 +184,15 @@ export async function createRun(auth, { period }) {
     if (await payrollRunModel.findActiveForPeriod(auth.orgId, period, db)) {
       throw new AppError(409, 'There is already a payroll for this month. Open it, or cancel it first.');
     }
+    let copied = null;
+    if (copyFrom) {
+      const source = await getRunOrFail(auth.orgId, copyFrom, {}, db);
+      if (source.status === 'cancelled') throw new AppError(422, 'That payroll was cancelled — copy from another month');
+      if (source.period === period) throw new AppError(422, 'Choose a different month to copy into');
+      copied = adjustmentsOf(await payrollRunModel.listItems(source.id, db));
+    }
     const runId = await payrollRunModel.create(auth.orgId, { period, preparedBy: auth.userId }, db);
-    await buildItems(auth.orgId, { id: runId, period }, db);
+    await buildItems(auth.orgId, { id: runId, period }, db, copied);
     return runId;
   });
 
@@ -186,7 +201,7 @@ export async function createRun(auth, { period }) {
     await payrollRunModel.setStatus(id, 'cancelled');
     throw new AppError(422, 'No one to pay yet. Set each employee’s salary on their profile (Pay tab) first.');
   }
-  await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'payroll.created', entityType: 'payroll', entityId: id, details: period });
+  await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'payroll.created', entityType: 'payroll', entityId: id, details: copyFrom ? `${period} (copied from payroll #${copyFrom})` : period });
   return getRun(auth, id);
 }
 

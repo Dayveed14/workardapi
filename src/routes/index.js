@@ -16,6 +16,7 @@ import publicRoutes from './publicRoutes.js';
 import payrollRoutes from './payrollRoutes.js';
 import taskRoutes from './taskRoutes.js';
 import reviewRoutes from './reviewRoutes.js';
+import performanceRoutes from './performanceRoutes.js';
 import jobRoutes from './jobRoutes.js';
 import billingRoutes from './billingRoutes.js';
 import onboardingRoutes from './onboardingRoutes.js';
@@ -55,6 +56,7 @@ router.use('/payroll', payrollRoutes); //       salaries, payroll runs, payslips
 // Phase 3B
 router.use('/tasks', taskRoutes); //           tasks, checklists, comments, files, repeating tasks
 router.use('/reviews', reviewRoutes); //       performance reviews, criteria, review settings
+router.use('/performance', performanceRoutes); // team performance charts (CEO / manager view)
 router.use('/jobs', jobRoutes); //             daily jobs trigger for an outside cron (CRON_SECRET)
 
 // Plans & onboarding

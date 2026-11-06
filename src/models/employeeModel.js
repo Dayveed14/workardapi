@@ -26,7 +26,7 @@ const SELECT_DETAIL = `
   SELECT e.*,
          b.name AS branch_name, d.name AS department_name, t.name AS team_name,
          CONCAT(mg.first_name, ' ', mg.last_name) AS manager_name,
-         r.id AS role_id, r.name AS role_name, m.status AS membership_status,
+         r.id AS role_id, r.name AS role_name, r.is_owner AS role_is_owner, m.status AS membership_status,
          (SELECT COUNT(*) FROM invites i WHERE i.employee_id = e.id AND i.accepted_at IS NULL AND i.expires_at > ?) AS pending_invites
     FROM employees e
     LEFT JOIN branches b    ON b.id = e.branch_id

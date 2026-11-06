@@ -646,6 +646,19 @@ try {
   r = await hr('PATCH', `/payroll/items/${staffItem.id}`, { bonus: 0, oneOffDeduction: 0 });
   check('approved payroll is locked', r.status === 409);
 
+  r = await hr('POST', '/payroll', { period: '2027-05', copyFrom: run1 });
+  const copiedItem = r.data.items?.find((i) => i.employee_id === staffId);
+  check('copy a payroll into a new month: same people, bonus carried over', r.status === 201 && r.data.items.length === 2 && Number(copiedItem?.bonus_kobo) === 5000000, r.data);
+  await hr('POST', `/payroll/${r.data.id}/cancel`);
+  r = await hr('POST', '/payroll', { period: '2027-05' });
+  check('…without "copy", bonuses start at zero', r.status === 201 && r.data.items.every((i) => Number(i.bonus_kobo) === 0), r.data.items?.map((i) => i.bonus_kobo));
+  const plainRun = r.data.id;
+  r = await hr('POST', '/payroll', { period: '2027-06', copyFrom: (raceA.status === 201 ? raceA : raceB).data.id });
+  check('can’t copy from a cancelled payroll', r.status === 422, r.data);
+  r = await hr('POST', '/payroll', { period: '2027-05', copyFrom: run1 });
+  check('copying into a month that already has a payroll is refused', r.status === 409, r.data);
+  await hr('POST', `/payroll/${plainRun}/cancel`);
+
   console.log('\nPaying through Paystack (fake server)');
   r = await fin('POST', `/payroll/${run1}/pay-paystack`);
   check('cannot pay with Paystack before connecting it', r.status === 409, r.data);
@@ -1356,6 +1369,27 @@ try {
   r = await sup('DELETE', `/projects/${projectId}`);
   r = await sup('GET', `/tasks/${sharedTask}`);
   check('deleting a project keeps its tasks', r.status === 200 && r.data.project_id === null, r.data);
+
+  console.log('\nTeam performance (CEO view)');
+  const ownerEmployeeId = (await owner('GET', '/auth/me')).data.employee?.id;
+  r = await owner('GET', `/performance?month=${thisMonth}`);
+  const chidiPerf = r.data.people?.find((p) => p.employeeId === staffId);
+  check('owner sees everyone with tasks, attendance and a score', r.status === 200 && r.data.people.length >= 3 && chidiPerf?.tasks.done >= 1 && chidiPerf.attendance.expected >= 0 && 'score' in chidiPerf, chidiPerf);
+  check('the owner isn’t measured on their own page', !r.data.people.some((p) => p.employeeId === ownerEmployeeId), r.data.people.map((p) => p.firstName));
+  check('team totals add up', r.data.team.done === r.data.people.reduce((a, p) => a + p.tasks.done, 0) && r.data.team.people === r.data.people.length, r.data.team);
+  check('best score first', r.data.people.every((p, i, all) => i === 0 || (all[i - 1].score ?? -1) >= (p.score ?? -1)), r.data.people.map((p) => p.score));
+  check('score is the average of what exists (never invented)', r.data.people.every((p) => {
+    const parts = [p.delivery, p.attendance.rate, p.review === null ? null : Math.round((p.review / 5) * 100)].filter((x) => x !== null);
+    return parts.length ? p.score === Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : p.score === null;
+  }), r.data.people);
+  r = await owner('GET', `/performance?month=${thisMonth}&months=3`);
+  check('3-month view covers three months', r.data.months?.length === 3, r.data.months);
+  r = await sup('GET', `/performance?month=${thisMonth}`);
+  check('a supervisor sees only their team', r.status === 200 && r.data.people.every((p) => [staffId, supId].includes(p.employeeId)), r.data.people?.map((p) => p.firstName));
+  r = await staff('GET', '/performance');
+  check('an employee can’t see team performance', r.status === 403);
+  r = await owner('GET', '/performance?months=2');
+  check('only 1, 3 or 6 months', r.status === 422 || r.status === 400, r.status);
 
   console.log('\nMeetings & stand-ups (LiveKit)');
   const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });

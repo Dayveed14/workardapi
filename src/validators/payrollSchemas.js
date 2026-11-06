@@ -61,6 +61,8 @@ export const employeePaySchema = z
 
 export const createRunSchema = z.object({
   period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Choose a month'),
+  // optional: copy the bonuses & one-off deductions from this earlier payroll
+  copyFrom: z.coerce.number().int().positive().optional().nullable(),
 });
 
 export const adjustItemSchema = z

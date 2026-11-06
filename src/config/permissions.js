@@ -57,7 +57,7 @@ export const PERMISSIONS = [
   // Direct managers ("Reports to") can always assign tasks to and review their own reports.
   { key: 'tasks.view', module: 'Tasks', label: 'See other people\'s tasks', scoped: true },
   { key: 'tasks.assign', module: 'Tasks', label: 'Assign & edit tasks for other people', scoped: true },
-  { key: 'reviews.view', module: 'Reviews', label: 'See performance reviews', scoped: true },
+  { key: 'reviews.view', module: 'Reviews', label: 'See performance reviews & team performance', scoped: true },
   { key: 'reviews.manage', module: 'Reviews', label: 'Start & write performance reviews', scoped: true },
   { key: 'reviews.setup', module: 'Reviews', label: 'Set review criteria & how often reviews happen', scoped: false },
 
