@@ -241,3 +241,42 @@ export function invoiceAcceptedEmail({ firstName, businessName, invoiceNumber, c
       ${button(link, 'View invoice')}`),
   };
 }
+
+export function announcementEmail({ firstName, author, groupName, title, body, link }) {
+  return {
+    subject: `${title} — from ${author}`,
+    text: `Hi ${firstName}, ${author} posted to ${groupName}: ${title}\n\n${body}\n\nReply on Workard: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p><strong>${esc(author)}</strong> posted to <strong>${esc(groupName)}</strong>:</p>
+      <h2 style="margin:16px 0 8px;font-size:18px">${esc(title)}</h2>
+      <p style="white-space:pre-line">${esc(body)}</p>
+      ${button(link, 'Read & comment')}`),
+  };
+}
+
+export function resourceEmail({ firstName, sender, title, message, link }) {
+  return {
+    subject: `${sender} sent you: ${title}`,
+    text: `Hi ${firstName}, ${sender} sent you "${title}" on Workard.${message ? ` ${message}` : ''} Open it: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p><strong>${esc(sender)}</strong> sent you <strong>${esc(title)}</strong>.</p>
+      ${message ? `<p style="white-space:pre-line">${esc(message)}</p>` : ''}
+      ${button(link, 'Open it in Workard')}`),
+  };
+}
+
+export function meetingInviteEmail({ firstName, organiser, title, when, link }) {
+  return {
+    subject: `Invitation: ${title} — ${when}`,
+    text: `Hi ${firstName}, ${organiser} invited you to "${title}" on ${when}. Join from Workard: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p><strong>${esc(organiser)}</strong> invited you to a meeting:</p>
+      <h2 style="margin:16px 0 4px;font-size:18px">${esc(title)}</h2>
+      <p style="margin:0 0 16px;color:#475569">${esc(when)}</p>
+      <p>Join from your browser in Workard — no app to install.</p>
+      ${button(link, 'Open the meeting')}`),
+  };
+}

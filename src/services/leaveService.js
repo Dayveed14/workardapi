@@ -3,6 +3,7 @@ import * as auditModel from '../models/auditModel.js';
 import { getEmployeeOrFail } from './accessService.js';
 import { scopeCondition } from '../utils/scope.js';
 import { toDateString, countWorkingDays } from '../utils/dates.js';
+import { notify, notifyEmployees, reviewersFor } from './notificationService.js';
 import AppError from '../utils/AppError.js';
 
 function requireEmployee(auth) {
@@ -60,6 +61,15 @@ export async function requestLeave(auth, { leaveTypeId, startDate, endDate, reas
 
   const id = await leaveModel.createRequest(auth.orgId, { employeeId: me.id, leaveTypeId: type.id, startDate, endDate, days, reason });
   await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'leave.requested', entityType: 'employee', entityId: me.id, details: `${type.name}: ${startDate} → ${endDate}` });
+  // Bell for whoever can approve it
+  const approvers = await reviewersFor(auth.orgId, me.id, 'leave.approve');
+  await notify(auth.orgId, approvers.map((a) => a.userId), {
+    type: 'leave.requested',
+    title: `${auth.userName} asked for ${days} day(s) of ${type.name}`,
+    body: `${startDate} → ${endDate}${reason ? ` · ${reason}` : ''}`,
+    link: '/leave?tab=approvals',
+    actorUserId: auth.userId,
+  });
   return leaveModel.findRequestById(auth.orgId, id);
 }
 
@@ -98,6 +108,13 @@ export async function reviewLeave(auth, requestId, { decision, note }) {
     entityType: 'employee',
     entityId: request.employee_id,
     details: `${request.first_name} ${request.last_name}: ${request.leave_type} ${request.start_date} → ${request.end_date}`,
+  });
+  await notifyEmployees(auth.orgId, [request.employee_id], {
+    type: `leave.${decision}`,
+    title: `Your ${request.leave_type} (${request.start_date} → ${request.end_date}) was ${decision}`,
+    body: note || null,
+    link: '/leave',
+    actorUserId: auth.userId,
   });
   return leaveModel.findRequestById(auth.orgId, requestId);
 }

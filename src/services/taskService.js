@@ -5,6 +5,8 @@ import * as auditModel from '../models/auditModel.js';
 import { getCustomerOrFail } from './accessService.js';
 import { uploadFile, deleteFile } from './uploadService.js';
 import { sendEmail, taskAssignedEmail } from './emailService.js';
+import { notify, notifyEmployees } from './notificationService.js';
+import { requireProject } from './projectService.js';
 import { managedCondition } from '../utils/scope.js';
 import { toDateString, addDays, nextOccurrence } from '../utils/dates.js';
 import { env } from '../config/env.js';
@@ -12,12 +14,14 @@ import AppError from '../utils/AppError.js';
 
 // ============================================================
 // WHO CAN DO WHAT WITH A TASK
-//   See it     → you're assigned to it, you created it, or the assignee is
-//                inside your `tasks.view` scope / reports to you
-//   Work on it → (status, checklist ticks, comments, files) the assignee,
+// A task can have several people on it (task_assignees). The first one is the LEAD
+// (tasks.assigned_employee_id) — permission scopes are checked against the lead.
+//   See it     → you're on it, you created it, or someone on it is inside your
+//                `tasks.view` scope / reports to you
+//   Work on it → (status, checklist ticks, comments, files) anyone on it,
 //                or anyone who can manage it
 //   Manage it  → (edit, reassign, delete) the person who created it, or anyone
-//                whose `tasks.assign` scope covers the assignee / who manages them
+//                whose `tasks.assign` scope covers the lead / who manages them
 //   Assign to  → yourself always; others inside `tasks.assign` / your direct reports
 // ============================================================
 
@@ -26,11 +30,16 @@ const me = (auth) => auth.employee?.id ?? -1;
 // SQL that limits tasks (alias t, assignee alias e) to what this person may see
 function visibleCondition(auth) {
   const managed = managedCondition(auth.permissions['tasks.view'], auth.employee);
+  const managedOther = managedCondition(auth.permissions['tasks.view'], auth.employee, 'e2');
   return {
-    sql: `(t.assigned_employee_id = ? OR t.created_by = ? OR ${managed.sql})`,
-    params: [me(auth), auth.userId, ...managed.params],
+    sql: `(t.created_by = ? OR ${managed.sql}
+       OR EXISTS (SELECT 1 FROM task_assignees ta JOIN employees e2 ON e2.id = ta.employee_id
+                   WHERE ta.task_id = t.id AND (ta.employee_id = ? OR ${managedOther.sql})))`,
+    params: [auth.userId, ...managed.params, me(auth), ...managedOther.params],
   };
 }
+
+const isOnTask = (auth, task) => (task.assignees || []).some((a) => a.id === me(auth)) || task.assigned_employee_id === me(auth);
 
 // Can this person assign/manage work for this employee?
 async function canAssignTo(auth, employeeId) {
@@ -53,13 +62,14 @@ async function checkAssignee(auth, employeeId) {
 async function getVisibleTask(auth, id) {
   const task = await taskModel.findVisible(auth.orgId, id, visibleCondition(auth));
   if (!task) throw new AppError(404, 'Task not found');
-  return task;
+  const [withPeople] = await taskModel.withAssignees([task]);
+  return withPeople;
 }
 
 async function canManage(auth, task) {
   if (task.created_by === auth.userId) return true;
   // A task someone else gave you is theirs to change — you can only work on it
-  if (task.assigned_employee_id === me(auth)) return false;
+  if (isOnTask(auth, task)) return false;
   return canAssignTo(auth, task.assigned_employee_id);
 }
 
@@ -68,32 +78,40 @@ async function requireManage(auth, task) {
 }
 
 async function requireWork(auth, task) {
-  if (task.assigned_employee_id === me(auth)) return;
+  if (isOnTask(auth, task)) return;
   await requireManage(auth, task);
 }
 
 const taskLink = (id) => `${env.clientUrls[0]}/tasks/${id}`;
 
-// Emails the assignee — unless they gave the task to themselves. Never blocks the save.
-async function notifyAssignee(auth, task) {
-  if (task.assigned_employee_id === me(auth)) return;
-  const employee = await employeeModel.findById(auth.orgId, task.assigned_employee_id);
-  if (!employee?.email) return;
-  try {
-    const assignedBy = auth.userName || 'Your manager';
-    await sendEmail({
-      to: employee.email,
-      ...taskAssignedEmail({
-        firstName: employee.first_name,
-        assignedBy,
-        title: task.title,
-        dueDate: task.due_date,
-        priority: task.priority,
-        link: taskLink(task.id),
-      }),
-    });
-  } catch (err) {
-    console.error('Task email failed:', err.message);
+// Tells the people on a task (bell + email) — except whoever made the change. Never blocks the save.
+async function notifyAssignees(auth, task, employeeIds) {
+  const people = (task.assignees || []).filter((a) => employeeIds.includes(a.id) && a.id !== me(auth));
+  if (!people.length) return;
+  await notifyEmployees(auth.orgId, people.map((p) => p.id), {
+    type: 'task.assigned',
+    title: `${auth.userName} gave you a task: ${task.title}`,
+    body: task.due_date ? `Due ${task.due_date}` : null,
+    link: `/tasks/${task.id}`,
+    actorUserId: auth.userId,
+  });
+  for (const person of people) {
+    if (!person.email) continue;
+    try {
+      await sendEmail({
+        to: person.email,
+        ...taskAssignedEmail({
+          firstName: person.first_name,
+          assignedBy: auth.userName || 'Your manager',
+          title: task.title,
+          dueDate: task.due_date,
+          priority: task.priority,
+          link: taskLink(task.id),
+        }),
+      });
+    } catch (err) {
+      console.error('Task email failed:', err.message);
+    }
   }
 }
 
@@ -111,6 +129,7 @@ export async function listTasks(auth, query) {
   if (query.view === 'mine') filters.assigneeId = me(auth);
   if (query.view === 'created') filters.createdBy = auth.userId;
   if (query.customerId) await getCustomerOrFail(auth, 'customers.view', query.customerId);
+  if (query.projectId) await requireProject(auth, query.projectId);
 
   const visible = visibleCondition(auth);
   const { rows, total } = await taskModel.list(auth.orgId, visible, filters);
@@ -119,7 +138,7 @@ export async function listTasks(auth, query) {
 
 export async function getCounts(auth) {
   const today = toDateString();
-  const mine = await taskModel.counts(auth.orgId, { sql: 't.assigned_employee_id = ?', params: [me(auth)] }, today);
+  const mine = await taskModel.counts(auth.orgId, { sql: 'EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.employee_id = ?)', params: [me(auth)] }, today);
   const canSeeOthers = auth.permissions['tasks.view'] || (await hasReports(auth));
   const team = canSeeOthers ? await taskModel.counts(auth.orgId, visibleCondition(auth), today) : null;
   return { mine, team };
@@ -151,39 +170,60 @@ export async function getTask(auth, id) {
     taskModel.listAttachments(id),
     canManage(auth, task),
   ]);
-  const isAssignee = task.assigned_employee_id === me(auth);
-  return { ...task, checklist, comments, attachments, canManage: manage, canWork: manage || isAssignee };
+  return { ...task, checklist, comments, attachments, canManage: manage, canWork: manage || isOnTask(auth, task) };
+}
+
+// The people asked for: assigneeIds (several) or assignedEmployeeId (one); nobody → yourself
+function requestedPeople(auth, data) {
+  const ids = data.assigneeIds?.length ? data.assigneeIds : data.assignedEmployeeId ? [data.assignedEmployeeId] : auth.employee ? [auth.employee.id] : [];
+  return [...new Set(ids.map(Number))];
 }
 
 export async function createTask(auth, data) {
-  const assigneeId = data.assignedEmployeeId || auth.employee?.id;
-  if (!assigneeId) {
+  const people = requestedPeople(auth, data);
+  if (!people.length) {
     throw new AppError(422, 'Choose who this task is for', { assignedEmployeeId: 'Choose someone' });
   }
-  await checkAssignee(auth, assigneeId);
+  for (const id of people) await checkAssignee(auth, id);
   if (data.customerId) await getCustomerOrFail(auth, 'customers.view', data.customerId);
+  if (data.projectId) await requireProject(auth, data.projectId);
 
-  const id = await taskModel.create(auth.orgId, { ...data, assignedEmployeeId: assigneeId, createdBy: auth.userId });
+  const { assigneeIds: _ids, ...fields } = data;
+  const id = await taskModel.create(auth.orgId, { ...fields, assignedEmployeeId: people[0], createdBy: auth.userId });
+  await taskModel.setAssignees(id, people);
   for (const text of data.checklist) await taskModel.addChecklistItem(id, text);
 
   await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'task.created', entityType: 'task', entityId: id, details: data.title });
-  const task = await taskModel.findById(auth.orgId, id);
-  await notifyAssignee(auth, task);
+  const [task] = await taskModel.withAssignees([await taskModel.findById(auth.orgId, id)]);
+  await notifyAssignees(auth, task, people);
   return getTask(auth, id);
 }
 
 export async function updateTask(auth, id, data) {
   const task = await getVisibleTask(auth, id);
   await requireManage(auth, task);
+  const { assigneeIds, ...fields } = data;
 
-  const reassigned = data.assignedEmployeeId && data.assignedEmployeeId !== task.assigned_employee_id;
-  if (reassigned) await checkAssignee(auth, data.assignedEmployeeId);
-  else delete data.assignedEmployeeId;
+  // A new set of people (the first is the lead)
+  let added = [];
+  if (assigneeIds?.length || (fields.assignedEmployeeId && fields.assignedEmployeeId !== task.assigned_employee_id)) {
+    const people = assigneeIds?.length ? [...new Set(assigneeIds.map(Number))] : [Number(fields.assignedEmployeeId)];
+    const before = task.assignees.map((a) => a.id);
+    added = people.filter((p) => !before.includes(p));
+    for (const p of added) await checkAssignee(auth, p);
+    if (people[0] !== task.assigned_employee_id) await checkAssignee(auth, people[0]);
+    fields.assignedEmployeeId = people[0];
+    await taskModel.setAssignees(id, people);
+  } else {
+    delete fields.assignedEmployeeId;
+  }
+  if (fields.projectId) await requireProject(auth, fields.projectId);
 
-  await taskModel.update(auth.orgId, id, data);
-  if (reassigned) {
+  await taskModel.update(auth.orgId, id, fields);
+  if (added.length) {
     await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'task.reassigned', entityType: 'task', entityId: id, details: task.title });
-    await notifyAssignee(auth, await taskModel.findById(auth.orgId, id));
+    const [updated] = await taskModel.withAssignees([await taskModel.findById(auth.orgId, id)]);
+    await notifyAssignees(auth, updated, added);
   }
   return getTask(auth, id);
 }
@@ -239,8 +279,17 @@ export async function removeChecklistItem(auth, itemId) {
 }
 
 export async function addComment(auth, id, body) {
-  await getVisibleTask(auth, id); // anyone who can see the task can comment
+  const task = await getVisibleTask(auth, id); // anyone who can see the task can comment
   await taskModel.addComment(id, auth.userId, body);
+  // Everyone on the task and whoever set it hears about it
+  const userIds = [...task.assignees.map((a) => a.user_id), task.created_by];
+  await notify(auth.orgId, userIds, {
+    type: 'task.comment',
+    title: `${auth.userName} commented on “${task.title}”`,
+    body: body.slice(0, 160),
+    link: `/tasks/${task.id}`,
+    actorUserId: auth.userId,
+  });
   return taskModel.listComments(id);
 }
 

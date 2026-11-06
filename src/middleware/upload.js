@@ -14,6 +14,17 @@ const DOCUMENT_TYPES = [
 ];
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
+// Team materials & attachments: documents, spreadsheets, slides, images
+const MATERIAL_TYPES = [
+  ...DOCUMENT_TYPES,
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/csv',
+  'text/plain',
+];
+
 function makeUploader(allowed, maxMb) {
   return multer({
     storage: multer.memoryStorage(),
@@ -27,3 +38,4 @@ function makeUploader(allowed, maxMb) {
 
 export const uploadDocument = makeUploader(DOCUMENT_TYPES, 10).single('file');
 export const uploadImage = makeUploader(IMAGE_TYPES, 5).single('file');
+export const uploadMaterial = makeUploader(MATERIAL_TYPES, 20).single('file');

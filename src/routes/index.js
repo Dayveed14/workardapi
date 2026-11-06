@@ -19,6 +19,12 @@ import reviewRoutes from './reviewRoutes.js';
 import jobRoutes from './jobRoutes.js';
 import billingRoutes from './billingRoutes.js';
 import onboardingRoutes from './onboardingRoutes.js';
+import notificationRoutes from './notificationRoutes.js';
+import announcementRoutes from './announcementRoutes.js';
+import staffRequestRoutes from './staffRequestRoutes.js';
+import resourceRoutes from './resourceRoutes.js';
+import projectRoutes from './projectRoutes.js';
+import meetingRoutes from './meetingRoutes.js';
 
 // Every API route, in one place. All of these sit under /api
 const router = Router();
@@ -49,10 +55,18 @@ router.use('/payroll', payrollRoutes); //       salaries, payroll runs, payslips
 // Phase 3B
 router.use('/tasks', taskRoutes); //           tasks, checklists, comments, files, repeating tasks
 router.use('/reviews', reviewRoutes); //       performance reviews, criteria, review settings
-router.use('/jobs', jobRoutes);
+router.use('/jobs', jobRoutes); //             daily jobs trigger for an outside cron (CRON_SECRET)
 
 // Plans & onboarding
 router.use('/billing', billingRoutes); //       plans, paying the yearly subscription (Paystack)
-router.use('/onboarding', onboardingRoutes); // new-joiner checklists //             daily jobs trigger for an outside cron (CRON_SECRET)
+router.use('/onboarding', onboardingRoutes); // new-joiner checklists
+
+// Working together
+router.use('/notifications', notificationRoutes); // the bell
+router.use('/announcements', announcementRoutes); // posts to a group + comments
+router.use('/requests', staffRequestRoutes); //     salary advances, loans, feedback & complaints
+router.use('/resources', resourceRoutes); //       team materials: documents & files
+router.use('/projects', projectRoutes); //         projects: tasks for a group, with a board
+router.use('/meetings', meetingRoutes); //         meetings & stand-ups (video by LiveKit)
 
 export default router;

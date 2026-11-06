@@ -37,3 +37,15 @@ export async function deleteFile(publicId, resourceType = 'image') {
     console.error('Cloudinary delete failed:', err.message); // the DB record is removed anyway
   }
 }
+
+// Like uploadFile, but in development WITHOUT Cloudinary small files are kept in the
+// database as a data: URL, so features can still be tried locally. Production needs Cloudinary.
+export async function storeFile(file, { orgId, subfolder, devMaxKb = 300 }) {
+  if (!file) throw new AppError(422, 'Choose a file');
+  if (cloudinaryEnabled || env.isProd) {
+    const uploaded = await uploadFile(file, { orgId, subfolder });
+    return { url: uploaded.url, publicId: uploaded.publicId, resourceType: uploaded.resourceType };
+  }
+  if (file.size > devMaxKb * 1024) throw new AppError(422, `Without Cloudinary, keep files under ${devMaxKb} KB`);
+  return { url: `data:${file.mimetype};base64,${file.buffer.toString('base64')}`, publicId: null, resourceType: null };
+}

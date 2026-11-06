@@ -72,3 +72,8 @@ export const stages = asyncHandler(async (req, res) => {
   await customerService.getCustomer(req.auth, req.params.id); // checks scope
   res.json(await salesService.stageHistory(req.params.id));
 });
+
+// GET /api/customers/assigned-to-me  (dashboard card)
+export const assignedToMe = asyncHandler(async (req, res) => {
+  res.json(await customerService.assignedToMe(req.auth));
+});

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
+import { runUpgrades } from '../db/upgrades.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbName = process.env.DB_NAME || 'workard';
@@ -25,8 +26,8 @@ const conn = await mysql.createConnection({
 
 await conn.query(sql);
 
-// Changes to existing tables (new ENUM values etc.) — safe to run every time
-const upgrades = fs.readFileSync(path.join(__dirname, '..', 'db', 'upgrades.sql'), 'utf8');
-await conn.query(`USE \`${dbName}\`; ${upgrades}`);
+// Changes to existing tables (new columns, new ENUM values) — safe to run every time
+await conn.query(`USE \`${dbName}\``);
+await runUpgrades(conn);
 await conn.end();
 console.log(`✔ Database "${dbName}" is ready`);

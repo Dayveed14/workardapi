@@ -105,7 +105,15 @@ export const env = Object.freeze({
   billingEnabled: bool('BILLING_ENABLED', false),
   trialDays: num('TRIAL_DAYS', 14),
   billingStartDate: str('BILLING_START_DATE'),
-  billingPaystackKey: str('PAYSTACK_SECRET_KEY'), // empty → plan payments show "not set up yet" (the API still starts)
+  billingPaystackKey: str('PAYSTACK_SECRET_KEY'),
+
+  // Video meetings (LiveKit Cloud or your own LiveKit server). Empty = meetings can be
+  // scheduled, but "Join" says video isn't set up yet.
+  livekit: {
+    url: str('LIVEKIT_URL'), //          wss://your-project.livekit.cloud
+    apiKey: str('LIVEKIT_API_KEY'),
+    apiSecret: str('LIVEKIT_API_SECRET'),
+  }, // empty → plan payments show "not set up yet" (the API still starts)
 
   cloudinary: Object.freeze({
     cloudName: str('CLOUDINARY_CLOUD_NAME'),

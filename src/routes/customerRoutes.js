@@ -22,6 +22,7 @@ router.get('/', view, validate(listCustomersSchema, 'query'), customerController
 router.get('/options', requirePermission('invoices.manage'), customerController.options);
 router.get('/sales', view, validate(salesQuerySchema, 'query'), customerController.sales);
 router.get('/follow-ups', view, customerController.followUps);
+router.get('/assigned-to-me', view, customerController.assignedToMe);
 router.get('/cases', view, customerController.openCases);
 router.patch('/activity/:interactionId/resolve', manage, customerController.resolveCase);
 router.patch('/activity/:interactionId/follow-up-done', manage, customerController.completeFollowUp);

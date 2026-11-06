@@ -19,15 +19,20 @@ const BILLING_KEY = `sk_test_${'w0rkard9z8'.repeat(3)}`; // Workard's own Paysta
 const fakePaystack = startFakePaystack({ validKey: PAYSTACK_KEY, billingKey: BILLING_KEY });
 process.env.PAYSTACK_BASE_URL = fakePaystack.url; // must be set before the app loads
 process.env.PAYSTACK_SECRET_KEY = BILLING_KEY;
+process.env.LIVEKIT_URL = 'wss://test.livekit.cloud';
+process.env.LIVEKIT_API_KEY = 'APItestkey';
+process.env.LIVEKIT_API_SECRET = 'test-secret-that-is-long-enough-for-hs256-signing';
 if (!process.env.ENCRYPTION_KEY) process.env.ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
 
 const { default: app } = await import('../src/app.js');
 const { devOutbox } = await import('../src/services/emailService.js');
 const { pool } = await import('../src/config/db.js');
 const { billing } = await import('../src/config/plans.js');
+const addDaysIso = (date, n) => { const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 billing.enabled = true; // test the paid flow (switched off further down to test free early access)
 billing.trialDays = 14;
 billing.startDate = null;
+await pool.query('DELETE FROM billing_plan_codes'); // plan codes belong to the fake Paystack, which starts empty each run
 
 const server = app.listen(0);
 const BASE = `http://127.0.0.1:${server.address().port}/api`;
@@ -108,13 +113,14 @@ try {
   r = await owner('GET', '/dashboard');
   check('when the trial ends the app locks until the plan is paid (402)', r.status === 402 && r.data.code === 'SUBSCRIPTION_REQUIRED' && /free trial has ended/.test(r.data.message), r.data);
   r = await owner('GET', '/billing');
-  check('billing page still works while locked', r.status === 200 && r.data.plans.length === 3 && r.data.plans[2].quote.amountKobo === 100_000_000, r.data);
-  r = await owner('POST', '/billing/checkout', { plan: 'enterprise' });
-  check('checkout returns a Paystack payment page for ₦1,000,000', r.status === 201 && r.data.authorizationUrl && r.data.amountKobo === 100_000_000 && r.data.kind === 'new', r.data);
+  const ent = r.data.plans?.[2];
+  check('billing page still works while locked: Enterprise ₦55,000/month or ₦647,988/year', r.status === 200 && ent.quotes.monthly.amountKobo === 5_500_000 && ent.quotes.yearly.amountKobo === 64_798_800 && ent.prices.yearlyPerMonth === 5_399_900, ent);
+  r = await owner('POST', '/billing/checkout', { plan: 'enterprise', interval: 'yearly' });
+  check('checkout returns a Paystack payment page for ₦647,988 (yearly)', r.status === 201 && r.data.authorizationUrl && r.data.amountKobo === 64_798_800 && r.data.kind === 'new', r.data);
   const firstRef = r.data.reference;
   r = await owner('POST', '/billing/verify', { reference: firstRef });
   check('not paid yet → still locked', r.data.status !== 'paid' && (await owner('GET', '/dashboard')).status === 402, r.data);
-  fakePaystack.state.transactions[firstRef].status = 'success'; // the owner pays on Paystack
+  fakePaystack.pay(firstRef); // the owner pays on Paystack
   const [verifyA, verifyB] = await Promise.all([
     owner('POST', '/billing/verify', { reference: firstRef }),
     owner('POST', '/billing/verify', { reference: firstRef }),
@@ -124,6 +130,8 @@ try {
   check('…and applied exactly once', Number(paidRows.n) === 1);
   r = await owner('GET', '/auth/me');
   check('plan is active for a year', r.data.subscription?.status === 'active' && r.data.subscription.daysLeft >= 364, r.data.subscription);
+  r = await owner('GET', '/billing');
+  check('…and renews automatically (Paystack subscription saved)', r.data.subscription.autoRenew === true && r.data.subscription.interval === 'yearly' && r.data.subscription.canManageCard, r.data.subscription);
   check('app unlocked after paying', (await owner('GET', '/dashboard')).status === 200);
 
   console.log('\nLog in with 2FA');
@@ -256,6 +264,10 @@ try {
   r = await sup('PATCH', `/attendance/${flaggedRecord.id}/review`, { decision: 'approved', note: 'Was at a client site' });
   check('supervisor approves it', r.status === 200 && r.data.review_status === 'approved', r.data);
   check('employee is emailed the decision', /was accepted/.test(lastEmail(staffEmail)?.subject), lastEmail(staffEmail));
+  r = await staff('GET', '/notifications');
+  check('…and gets bell notifications for the flag and the decision', r.data.items.some((n) => n.type === 'attendance.flagged') && r.data.items.some((n) => n.type === 'attendance.approved'), r.data.items.map((n) => n.type));
+  r = await sup('GET', '/notifications');
+  check('the supervisor’s bell shows the explanation to review', r.data.items.some((n) => n.type === 'attendance.to_review' && /Wuse/.test(n.body)), r.data.items.map((n) => n.type));
 
   // A supervisor's own flag is never in their review list
   r = await sup('POST', '/me/attendance/clock-in', { latitude: 9.2, longitude: 7.6, accuracy: 20 });
@@ -428,6 +440,36 @@ try {
   check('invoice shows as viewed and customer promoted', r.data.viewed_at && r.data.status === 'sent', r.data);
   r = await owner('GET', `/customers/${custA}`);
   check('lead became a customer when invoiced', r.data.stage === 'customer', r.data.stage);
+
+  console.log('\nAssigned leads & the notification bell');
+  r = await owner('POST', '/customers', { name: 'Bell Test Ltd', stage: 'lead', assignedEmployeeId: staffId });
+  const bellCust = r.data.id;
+  check('owner assigns a lead; it remembers who assigned it', r.data.assigned_by_name === 'Ada Okafor' && !!r.data.assigned_at, r.data);
+  r = await staff('GET', '/notifications/count');
+  check('the employee gets a bell notification', r.data.unread >= 1, r.data);
+  r = await staff('GET', '/notifications');
+  const assignedNote = r.data.items.find((n) => n.type === 'customer.assigned');
+  check('…saying who assigned what, linking to the customer', /Ada Okafor assigned you a lead: Bell Test Ltd/.test(assignedNote?.title) && assignedNote.link === `/customers/${bellCust}` && assignedNote.actor_name === 'Ada Okafor', assignedNote);
+  r = await staff('GET', '/customers/assigned-to-me');
+  check('dashboard “Assigned to you” shows who assigned it', r.data.some((c) => c.id === bellCust && c.assigned_by_name === 'Ada Okafor'), r.data);
+  r = await staff('PATCH', `/customers/${bellCust}`, { stage: 'customer' });
+  check('the employee can move their assigned lead to customer', r.status === 200 && r.data.stage === 'customer', r.data);
+  r = await staff('POST', `/customers/${bellCust}/activity`, { type: 'call', subject: 'Agreed delivery dates' });
+  r = await owner('GET', '/notifications');
+  check('whoever assigned it is told about the stage change', r.data.items.some((n) => n.type === 'customer.updated' && /moved Bell Test Ltd from Lead to Customer/.test(n.title)), r.data.items.slice(0, 3));
+  check('…and about logged activity', r.data.items.some((n) => /logged a call on Bell Test Ltd: Agreed delivery dates/.test(n.title)), r.data.items.slice(0, 3));
+  r = await owner('GET', '/notifications');
+  const firstNote = r.data.items[0];
+  r = await owner('PATCH', `/notifications/${firstNote.id}/read`);
+  check('mark one notification read', r.status === 200 && typeof r.data.unread === 'number');
+  r = await staff('PATCH', `/notifications/${firstNote.id}/read`);
+  r = await owner('GET', '/notifications');
+  check('you can only read your own notifications', r.data.items.find((n) => n.id === firstNote.id)?.read_at && !r.data.items.some((n) => n.type === 'customer.assigned' && /assigned you/.test(n.title)), r.data.items.slice(0, 2));
+  r = await owner('POST', '/notifications/read-all');
+  check('mark all read', (await owner('GET', '/notifications/count')).data.unread === 0);
+  r = await owner('PATCH', `/customers/${bellCust}`, { stage: 'customer', notes: 'VIP' });
+  check('your own changes don’t notify you', (await owner('GET', '/notifications/count')).data.unread === 0);
+  await pool.query('DELETE FROM customers WHERE id = ?', [bellCust]); // keep the sales numbers below as they were
 
   console.log('\nSales pipeline (stages, lost deals, conversion)');
   r = await owner('POST', '/customers', { name: 'Lost Deal Ltd', stage: 'prospect', source: 'Referral' });
@@ -700,6 +742,97 @@ try {
   r = await owner('DELETE', `/finance/entries/${salaryEntry.id}`);
   check('payroll expenses cannot be deleted from Finance', r.status === 400, r.status);
 
+  console.log('\nSalary advances & staff loans (through payroll)');
+  await owner('PATCH', `/employees/${staffId}`, { managerId: supId }); // Chidi reports to Bola
+  r = await staff('GET', '/requests/limits');
+  check('limits: advance up to one month’s basic (₦300,000), loan up to a year’s basic (₦3.6m)', r.data.advance.maxKobo === 30_000_000 && r.data.loan.maxKobo === 360_000_000, r.data);
+  r = await staff('POST', '/requests', { type: 'loan', amount: 4_000_000, reason: 'Rent for the new flat' });
+  check('a loan over a year’s basic pay is refused', r.status === 422 && r.data.errors?.amount, r.data);
+  r = await staff('POST', '/requests', { type: 'loan', amount: 1_200_000, reason: 'Rent for the new flat' });
+  check('loan of ₦1.2m: 5% flat → repay ₦1,260,000 at ₦105,000 a month for 12 months', r.status === 201 && r.data.total_repayable_kobo === 126_000_000 && r.data.monthly_deduction_kobo === 10_500_000 && r.data.months === 12, r.data);
+  const loanId = r.data.id;
+  r = await sup('GET', '/notifications');
+  check('the line manager is told', r.data.items.some((n) => n.type === 'request.new' && /staff loan of ₦1,200,000/.test(n.title)), r.data.items.map((n) => n.title));
+  r = await sup('GET', '/requests?view=approvals');
+  check('…and sees it to approve', r.data.some((x) => x.id === loanId && x.canDecide), r.data);
+  r = await hr('PATCH', `/requests/${loanId}/decision`, { decision: 'approved' });
+  check('with a line manager set, HR can’t approve it instead', r.status === 403, r.data);
+  r = await staff('PATCH', `/requests/${loanId}/decision`, { decision: 'approved' });
+  check('nobody approves their own request', r.status === 403);
+  r = await sup('PATCH', `/requests/${loanId}/decision`, { decision: 'approved', note: 'Approved — good luck with the move' });
+  check('line manager approves', r.status === 200 && r.data.status === 'approved', r.data);
+  r = await staff('GET', '/notifications');
+  check('employee is told it was approved', r.data.items.some((n) => n.type === 'request.approved'), r.data.items.map((n) => n.type));
+  r = await hr('GET', '/notifications');
+  check('the payroll team is told to pay it out', r.data.items.some((n) => n.type === 'request.to_pay'), r.data.items.map((n) => n.type));
+  r = await staff('POST', `/requests/${loanId}/paid-out`);
+  check('only the payroll team marks it paid out', r.status === 403);
+  r = await hr('POST', `/requests/${loanId}/paid-out`);
+  check('payroll marks the loan paid out', r.status === 200 && r.data.status === 'paid_out', r.data);
+
+  r = await staff('POST', '/requests', { type: 'advance', amount: 100_000, reason: 'School fees this week' });
+  check('salary advance of ₦100,000 (no interest)', r.status === 201 && r.data.total_repayable_kobo === 10_000_000 && r.data.months === 1, r.data);
+  const advanceId = r.data.id;
+  r = await staff('POST', '/requests', { type: 'advance', amount: 50_000, reason: 'Another one please' });
+  check('only one salary advance open at a time', r.status === 409, r.data);
+  await sup('PATCH', `/requests/${advanceId}/decision`, { decision: 'approved' });
+  await hr('POST', `/requests/${advanceId}/paid-out`);
+
+  r = await hr('POST', '/payroll', { period: '2026-02' });
+  const loanRun = r.data.id;
+  const chidiItem = r.data.items?.find((i) => i.employee_id === staffId);
+  const lines = JSON.parse(chidiItem?.breakdown || '[]');
+  check('next payroll deducts ₦105,000 loan + ₦100,000 advance', Number(chidiItem?.other_deductions_kobo) === 20_500_000 && lines.length === 2, [chidiItem?.other_deductions_kobo, lines]);
+  check('net pay drops by exactly ₦205,000', Number(chidiItem?.net_kobo) === 39_830_000 - 20_500_000, chidiItem?.net_kobo);
+  await owner('POST', `/payroll/${loanRun}/approve`);
+  await fin('POST', `/payroll/${loanRun}/mark-paid`, { paidOn: today, method: 'bank_upload' });
+  r = await staff('GET', `/requests/${loanId}`);
+  check('after payroll is paid: loan balance ₦1,155,000, one repayment', r.data.balance_kobo === 115_500_000 && r.data.repayments.length === 1 && r.data.status === 'paid_out', r.data);
+  r = await staff('GET', `/requests/${advanceId}`);
+  check('the advance is fully repaid', r.data.status === 'repaid' && r.data.balance_kobo === 0, r.data);
+  const { recordRepaymentsForRun } = await import('../src/services/staffRequestService.js');
+  check('a payroll’s repayments are never counted twice', (await recordRepaymentsForRun(orgId, loanRun)) === 0);
+  r = await staff('GET', '/requests/limits');
+  check('open loans count towards the limit (₦3.6m − ₦1.2m)', r.data.loan.maxKobo === 240_000_000 && r.data.advance.maxKobo === 30_000_000, r.data);
+  r = await staff('POST', '/requests', { type: 'advance', amount: 20_000, reason: 'Transport' });
+  const cancelId = r.data.id;
+  r = await staff('POST', `/requests/${cancelId}/cancel`);
+  check('employee can cancel a request that’s still pending', r.data.status === 'cancelled', r.data);
+  r = await sup('GET', `/requests/${loanId}`);
+  check('the line manager can open it', r.status === 200);
+
+  console.log('\nFeedback, complaints & suggestions');
+  r = await staff('POST', '/requests/feedback', { category: 'suggestion', subject: 'Water dispenser', body: 'Could we get a water dispenser on the 2nd floor?', isAnonymous: false });
+  check('send a named suggestion', r.status === 201 && r.data.sender_name === 'Chidi Eze' && r.data.privateLink === null, r.data);
+  const namedFb = r.data.id;
+  r = await staff('POST', '/requests/feedback', { category: 'complaint', subject: 'Unfair shift rota', body: 'The weekend shifts always go to the same three people.', isAnonymous: true });
+  check('send an anonymous complaint → private link to follow it', r.status === 201 && r.data.sender_name === null && /^\/feedback\/[a-f0-9]{48}$/.test(r.data.privateLink), r.data);
+  const anonToken = r.data.privateLink.split('/').pop();
+  const anonId = r.data.id;
+  const [[anonRow]] = await pool.query('SELECT employee_id, user_id, token_hash FROM staff_feedback WHERE id = ?', [anonId]);
+  check('anonymous: no employee or user is stored, only a hash of the link', anonRow.employee_id === null && anonRow.user_id === null && anonRow.token_hash.length === 64 && !anonRow.token_hash.includes(anonToken), anonRow);
+  r = await hr('GET', '/notifications');
+  check('HR is told, without a name', r.data.items.some((n) => n.type === 'feedback.new' && /^Someone \(anonymous\)/.test(n.title) && n.actor_name === null), r.data.items.filter((n) => n.type === 'feedback.new'));
+  r = await hr('GET', '/requests/feedback/inbox');
+  check('HR sees both in the inbox', r.data.some((f) => f.id === anonId && f.sender_name === null && f.is_anonymous === 1) && r.data.some((f) => f.id === namedFb), r.data);
+  r = await staff('GET', '/requests/feedback/inbox');
+  check('staff can’t read the inbox', r.status === 403);
+  r = await staff('GET', '/requests/feedback/mine');
+  check('“my feedback” lists the named one only (anonymous isn’t linked to you)', r.data.length === 1 && r.data[0].id === namedFb, r.data);
+  r = await hr('POST', `/requests/feedback/${anonId}/replies`, { body: 'Thanks — we’ll rotate weekends from next month.', status: 'in_review' });
+  check('HR replies to the anonymous complaint', r.status === 200 && r.data.replies.length === 1 && r.data.status === 'in_review', r.data);
+  r = await staff('GET', `/requests/feedback/private/${anonToken}`);
+  check('the sender reads the reply through their private link', r.status === 200 && r.data.replies[0].author_name === 'Hauwa HR', r.data);
+  r = await staff('POST', `/requests/feedback/private/${anonToken}/replies`, { body: 'Thank you!' });
+  check('…and answers, still anonymous', r.data.replies.at(-1).from_sender === 1 && r.data.replies.at(-1).author_name === null, r.data.replies);
+  r = await staff('GET', `/requests/feedback/private/${'0'.repeat(48)}`);
+  check('a wrong link finds nothing', r.status === 404);
+  r = await hr('POST', `/requests/feedback/${namedFb}/replies`, { body: 'Ordered one!', status: 'resolved' });
+  r = await staff('GET', '/notifications');
+  check('a named sender is told about the reply', r.data.items.some((n) => n.type === 'feedback.reply'), r.data.items.map((n) => n.type));
+  const [[auditAnon]] = await pool.query("SELECT COUNT(*) AS n FROM audit_logs WHERE details LIKE '%Unfair shift rota%'");
+  check('anonymous feedback leaves nothing in the activity log', Number(auditAnon.n) === 0);
+
   console.log('\nTasks');
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   r = await staff('POST', '/tasks', { title: 'Call back Mrs Eze', checklist: [] });
@@ -908,10 +1041,12 @@ try {
   check('sign up needs a plan', r.status === 422 && r.data.errors?.plan, r.data);
   r = await small('POST', '/auth/register', { fullName: 'Kemi Small', organizationName: 'Kemi Bakery', email: smallEmail, password: 'secret123', plan: 'starter' });
   r = await small('POST', '/auth/verify-otp', { challengeToken: r.data.challengeToken, code: codeFor(smallEmail) });
-  r = await small('POST', '/billing/checkout', { plan: 'starter' });
-  check('Starter costs ₦250,000', r.data.amountKobo === 25_000_000, r.data);
-  fakePaystack.state.transactions[r.data.reference].status = 'success';
+  r = await small('POST', '/billing/checkout', { plan: 'starter', interval: 'monthly' });
+  check('Starter costs ₦15,000 a month', r.data.amountKobo === 1_500_000, r.data);
+  fakePaystack.pay(r.data.reference);
   await small('POST', '/billing/verify', { reference: r.data.reference });
+  r = await small('GET', '/billing');
+  check('paid monthly: about a month, renews automatically', r.data.subscription.interval === 'monthly' && r.data.subscription.daysLeft >= 27 && r.data.subscription.daysLeft <= 31 && r.data.subscription.autoRenew, r.data.subscription);
   r = await small('GET', '/tasks');
   check('Starter: tasks are locked (upgrade needed)', r.status === 403 && r.data.code === 'PLAN_UPGRADE_REQUIRED', r.data);
   check('Starter: payroll is locked', (await small('GET', '/payroll')).status === 403);
@@ -927,38 +1062,82 @@ try {
   check('Starter dashboard has no money/customer/task blocks', r.status === 200 && r.data.money === null && r.data.customers === null && r.data.tasks === null, r.data);
 
   r = await small('GET', '/billing');
-  const toBusiness = r.data.plans.find((p) => p.id === 'business').quote;
-  check('upgrade price = the difference for the days left (₦350,000 for a full year)', toBusiness.kind === 'upgrade' && Math.abs(toBusiness.amountKobo - 35_000_000) <= 100_000, toBusiness);
-  check('can\'t downgrade or renew early', r.data.plans.find((p) => p.id === 'starter').quote.allowed === false, r.data.plans);
+  const toBusiness = r.data.plans.find((p) => p.id === 'business').quotes;
+  check('upgrade price = the difference for the days left (about ₦20,000 for a whole month)', toBusiness.monthly.kind === 'upgrade' && toBusiness.monthly.amountKobo <= 2_000_000 && toBusiness.monthly.amountKobo >= 1_800_000, toBusiness.monthly);
+  check('switching to yearly waits for the next period (no payment now)', toBusiness.yearly.kind === 'scheduled' && toBusiness.yearly.amountKobo === 0, toBusiness.yearly);
+  check('the current plan shows when it renews', r.data.plans.find((p) => p.id === 'starter').quotes.monthly.current === true, r.data.plans[0].quotes);
   const endBefore = r.data.subscription.periodEnd;
-  r = await small('POST', '/billing/checkout', { plan: 'business' });
-  fakePaystack.state.transactions[r.data.reference].status = 'success';
+  const [[smallSubBefore]] = await pool.query('SELECT s.* FROM subscriptions s JOIN memberships m ON m.organization_id = s.organization_id JOIN users u ON u.id = m.user_id WHERE u.email = ?', [smallEmail]);
+  r = await small('POST', '/billing/checkout', { plan: 'business', interval: 'monthly' });
+  fakePaystack.pay(r.data.reference);
   await small('POST', '/billing/verify', { reference: r.data.reference });
   r = await small('GET', '/auth/me');
   check('upgraded to Business, same end date', r.data.subscription.plan === 'business' && r.data.subscription.periodEnd === endBefore, r.data.subscription);
+  const [[smallSub]] = await pool.query('SELECT * FROM subscriptions WHERE organization_id = ?', [smallSubBefore.organization_id]);
+  const oldPaystackSub = fakePaystack.state.subscriptions.find((x) => x.subscription_code === smallSubBefore.paystack_subscription_code);
+  const newPaystackSub = fakePaystack.state.subscriptions.find((x) => x.subscription_code === smallSub.paystack_subscription_code);
+  check('after the upgrade, renewals move to the Business plan from the next period', oldPaystackSub?.status === 'disabled' && newPaystackSub?.status === 'active' && fakePaystack.state.plans[newPaystackSub.plan.plan_code].amount === 3_500_000 && newPaystackSub.start_date.startsWith(addDaysIso(endBefore, 1)), { oldPaystackSub, newPaystackSub });
   check('Business: tasks now open', (await small('GET', '/tasks')).status === 200);
   check('Business: 11th employee now allowed', (await small('POST', '/employees', { firstName: 'Eleventh', lastName: 'Person', email: `s11.${stamp}@test.ng` })).status === 201);
 
-  // The year runs out…
+  // Paystack renews automatically
   const smallOrgId = r.data.organization.id;
+  const signed = (payload, key = BILLING_KEY) => {
+    const text = JSON.stringify(payload);
+    return fetch(`${BASE}/webhooks/paystack-billing`, { method: 'POST', headers: { 'x-paystack-signature': crypto.createHmac('sha512', key).update(text).digest('hex'), 'Content-Type': 'application/json' }, body: text });
+  };
+  const renewal = fakePaystack.renew(smallSub.paystack_subscription_code);
+  let hook = await signed(renewal, 'sk_test_forged');
+  check('billing webhook with a forged signature is rejected', hook.status === 401);
+  hook = await signed(renewal);
+  await signed(renewal); // Paystack sometimes sends it twice
+  r = await small('GET', '/auth/me');
+  const nextStart = addDaysIso(endBefore, 1);
+  check('automatic renewal: the next month follows straight on', hook.status === 200 && r.data.subscription.periodEnd > endBefore && r.data.subscription.status === 'active', [endBefore, r.data.subscription]);
+  const [[renewRows]] = await pool.query("SELECT COUNT(*) AS n, MIN(period_start) AS start FROM billing_payments WHERE organization_id = ? AND kind = 'auto_renewal'", [smallOrgId]);
+  check('…counted once, starting the day after the old period', Number(renewRows.n) === 1 && renewRows.start === nextStart, renewRows);
+
+  // Card declined on a renewal
+  await signed({ event: 'invoice.payment_failed', data: { subscription: { subscription_code: smallSub.paystack_subscription_code } } });
+  r = await small('GET', '/billing');
+  check('failed renewal: shown on Billing', /could not charge your card/.test(r.data.subscription.renewalProblem), r.data.subscription);
+  r = await small('GET', '/notifications');
+  check('…and the owner’s bell', r.data.items.some((n) => n.type === 'billing.payment_failed'), r.data.items.map((n) => n.type));
+  r = await small('GET', '/billing/card-link');
+  check('owner can open Paystack’s page to change the card', /\/manage\/SUB_test/.test(r.data.link), r.data);
+
+  // Monthly → yearly from the next period
+  r = await small('POST', '/billing/change', { plan: 'business', interval: 'yearly' });
+  check('switch to yearly from the next period', r.status === 200 && r.data.subscription.nextInterval === 'yearly' && r.data.subscription.nextPlan === 'business', r.data.subscription);
+  const [[afterChange]] = await pool.query('SELECT * FROM subscriptions WHERE organization_id = ?', [smallOrgId]);
+  const yearlySub = fakePaystack.state.subscriptions.find((x) => x.subscription_code === afterChange.paystack_subscription_code);
+  check('…Paystack will charge the yearly price next time', fakePaystack.state.plans[yearlySub.plan.plan_code].amount === 39_598_800, yearlySub);
+  r = await small('DELETE', '/billing/change');
+  check('a scheduled change can be undone', r.data.subscription.nextPlan === null, r.data.subscription);
+
+  // Auto-renew off and back on
+  r = await small('POST', '/billing/auto-renew', { on: false });
+  check('turn automatic renewal off', r.data.subscription.autoRenew === false, r.data.subscription);
+  r = await small('POST', '/billing/auto-renew', { on: true });
+  check('…and back on', r.data.subscription.autoRenew === true, r.data.subscription);
+
+  // The period runs out with no payment…
   await pool.query('UPDATE subscriptions SET current_period_end = DATE_SUB(CURDATE(), INTERVAL 3 DAY) WHERE organization_id = ?', [smallOrgId]);
   r = await small('GET', '/auth/me');
-  check('3 days after the year ends: still works (grace) with a warning', r.data.subscription.status === 'grace' && (await small('GET', '/dashboard')).status === 200, r.data.subscription);
+  check('3 days after the period ends: still works (grace) with a warning', r.data.subscription.status === 'grace' && (await small('GET', '/dashboard')).status === 200, r.data.subscription);
   await pool.query('UPDATE subscriptions SET current_period_end = DATE_SUB(CURDATE(), INTERVAL 10 DAY) WHERE organization_id = ?', [smallOrgId]);
-  check('10 days after: locked until renewed', (await small('GET', '/dashboard')).status === 402);
-  r = await small('POST', '/billing/checkout', { plan: 'starter' });
-  check('expired: can renew on any plan, full price', r.data.kind === 'renewal' && r.data.amountKobo === 25_000_000, r.data);
-  fakePaystack.state.transactions[r.data.reference].status = 'success';
+  check('10 days after: locked until paid', (await small('GET', '/dashboard')).status === 402);
+  r = await small('POST', '/billing/checkout', { plan: 'starter', interval: 'yearly' });
+  check('expired: can pay again on any plan and interval, full price', r.data.kind === 'renewal' && r.data.amountKobo === 15_598_800, r.data);
+  fakePaystack.pay(r.data.reference);
   // Owner closes the tab — Paystack's webhook confirms it instead
-  const body = JSON.stringify({ event: 'charge.success', data: { reference: r.data.reference } });
-  const sign = (key) => crypto.createHmac('sha512', key).update(body).digest('hex');
-  let hook = await fetch(`${BASE}/webhooks/paystack-billing`, { method: 'POST', headers: { 'x-paystack-signature': sign('sk_test_forged'), 'Content-Type': 'application/json' }, body });
-  check('billing webhook with a forged signature is rejected', hook.status === 401);
-  hook = await fetch(`${BASE}/webhooks/paystack-billing`, { method: 'POST', headers: { 'x-paystack-signature': sign(BILLING_KEY), 'Content-Type': 'application/json' }, body });
+  hook = await signed({ event: 'charge.success', data: { reference: r.data.reference } });
   r = await small('GET', '/auth/me');
-  check('webhook renews the plan (new year from today)', hook.status === 200 && r.data.subscription.status === 'active' && r.data.subscription.plan === 'starter' && r.data.subscription.daysLeft >= 364, r.data.subscription);
-  r = await staff('POST', '/billing/checkout', { plan: 'business' });
+  check('webhook confirms the payment (new year from today)', hook.status === 200 && r.data.subscription.status === 'active' && r.data.subscription.plan === 'starter' && r.data.subscription.daysLeft >= 364, r.data.subscription);
+  r = await staff('POST', '/billing/checkout', { plan: 'business', interval: 'monthly' });
   check('only the owner can pay', r.status === 403);
+  r = await staff('GET', '/billing');
+  check('staff don’t see prices or payments', r.status === 200 && r.data.isOwner === false && !r.data.plans && !r.data.payments, r.data);
 
   // Organisations from before plans keep full access
   const legacy = client();
@@ -981,7 +1160,7 @@ try {
   check('free organisation gets everything', r.data.subscription.status === 'free' && r.data.subscription.usable && r.data.subscription.features.includes('payroll'), r.data.subscription);
   check('…and can use paid features', (await freeCo('GET', '/payroll')).status === 200 && (await freeCo('GET', '/tasks')).status === 200);
   r = await freeCo('GET', '/billing');
-  check('nothing to pay while free', r.data.plans.every((p) => p.quote.allowed === false), r.data.plans);
+  check('nothing to pay while free', r.data.plans.every((p) => p.quotes.monthly.allowed === false && p.quotes.yearly.allowed === false), r.data.plans);
   r = await small('GET', '/auth/me');
   check('organisations that already paid keep their plan', r.data.subscription.status === 'active' && r.data.subscription.plan === 'starter', r.data.subscription);
 
@@ -1038,6 +1217,188 @@ try {
   check('supervisor sees only their team', r.data.people.every((p) => [staffId, supId].includes(p.employeeId)), r.data.people.map((p) => p.employeeId));
   r = await staff('GET', `/attendance/monthly?month=${thisMonth}`);
   check('staff cannot see everyone\'s adherence', r.status === 403);
+
+  console.log('\nAnnouncements & comments');
+  r = await sup('GET', '/announcements/groups');
+  check('a team supervisor can post to their own team only', r.data.length === 1 && r.data[0].type === 'team' && r.data[0].label === 'Field Sales team', r.data);
+  r = await sup('POST', '/announcements', { audienceType: 'company', title: 'Hello all', body: 'Hi' });
+  check('…not to the whole company', r.status === 403, r.data);
+  r = await staff('POST', '/announcements', { audienceType: 'team', audienceId: teamId, title: 'Hello team', body: 'Hi' });
+  check('an employee can’t post', r.status === 403, r.data);
+  const postForm = new FormData();
+  postForm.append('audienceType', 'team');
+  postForm.append('audienceId', String(teamId));
+  postForm.append('title', 'Standup moved to 9:30');
+  postForm.append('body', 'From Monday our daily standup starts at 9:30.\nBring your numbers.');
+  postForm.append('file', new Blob(['Agenda: numbers, blockers'], { type: 'text/plain' }), 'agenda.txt');
+  r = await sup('POST', '/announcements', postForm);
+  check('supervisor posts to the team with an attachment', r.status === 201 && r.data.audience_name === 'Field Sales team' && r.data.attachment_name === 'agenda.txt', r.data);
+  const teamPost = r.data.id;
+  r = await staff('GET', '/notifications');
+  check('team members get a bell notification', r.data.items.some((n) => n.type === 'announcement.posted' && /Standup moved/.test(n.title)), r.data.items.map((n) => n.title));
+  r = await staff('GET', '/announcements/unseen');
+  check('dashboard shows it as new', r.data.some((p) => p.id === teamPost), r.data);
+  r = await staff('GET', '/announcements');
+  check('team member sees it in the feed', r.data.posts.some((p) => p.id === teamPost && !p.canManage && p.stats === null), r.data);
+  check('…and it’s marked seen', (await staff('GET', '/announcements/unseen')).data.length === 0);
+
+  r = await owner('POST', '/announcements', { audienceType: 'company', title: 'Office closed on Friday', body: 'Public holiday — enjoy the long weekend.', needsAck: true, sendEmail: true, isPinned: true });
+  check('owner posts to everyone (pinned, needs acknowledgement)', r.status === 201 && r.data.is_pinned === 1 && r.data.needs_ack === 1, r.data);
+  const companyPost = r.data.id;
+  check('“also email everyone” emails the group', /Office closed on Friday/.test(lastEmail(staffEmail)?.subject), lastEmail(staffEmail));
+  r = await staff('GET', '/announcements');
+  check('pinned posts come first', r.data.posts[0].id === companyPost, r.data.posts.map((p) => p.id));
+
+  r = await staff('POST', `/announcements/${teamPost}/comments`, { body: 'Noted — will 9:30 work for the field team too?' });
+  check('staff comment on a post', r.status === 201 && r.data.mine, r.data);
+  const staffComment = r.data.id;
+  r = await sup('GET', '/notifications');
+  check('the author is told about comments', r.data.items.some((n) => n.type === 'announcement.comment' && /Chidi Eze commented/.test(n.title)), r.data.items.map((n) => n.title));
+  await sup('POST', `/announcements/${teamPost}/comments`, { body: 'Yes, everyone.' });
+  r = await staff('GET', '/notifications');
+  check('when the author replies, commenters are told', r.data.items.some((n) => n.type === 'announcement.comment' && /Bola Ade commented/.test(n.title)), r.data.items.map((n) => n.title));
+
+  r = await staff('POST', `/announcements/${companyPost}/acknowledge`);
+  check('staff tap “I’ve read this”', r.status === 200);
+  r = await owner('GET', '/announcements');
+  const ownerView = r.data.posts.find((p) => p.id === companyPost);
+  check('the author sees how many have seen and acknowledged it', ownerView.canManage && ownerView.stats.acknowledged === 1 && ownerView.stats.seen >= 1 && ownerView.stats.audience >= 3, ownerView.stats);
+  r = await owner('GET', `/announcements/${companyPost}/readers`);
+  check('…and exactly who', r.data.some((p) => p.name === 'Chidi Eze' && p.acknowledgedAt) && r.data.some((p) => p.name === 'Dayo Out' && !p.hasLogin), r.data);
+  r = await staff('GET', `/announcements/${companyPost}/readers`);
+  check('staff can’t see who read it', r.status === 403);
+
+  r = await staff('DELETE', `/announcements/${teamPost}`);
+  check('staff can’t delete a post', r.status === 403);
+  r = await staff('DELETE', `/announcements/comments/${staffComment}`);
+  check('…but can delete their own comment', r.status === 204);
+  r = await sup('PATCH', `/announcements/${teamPost}`, { isPinned: true });
+  check('the author can pin their post', r.status === 200 && r.data.is_pinned === 1, r.data);
+  r = await sup('GET', '/announcements');
+  check('a supervisor doesn’t see posts for other groups', r.data.posts.every((p) => ['company', 'team'].includes(p.audience_type)), r.data.posts.map((p) => p.audience_name));
+
+  console.log('\nTeam resources (documents & files)');
+  r = await sup('POST', '/resources', { kind: 'document', audienceType: 'team', audienceId: teamId, title: 'Field sales script', description: 'What to say on a first visit',
+    body: '<h2>Opening</h2><p>Good morning, I’m <strong>from Ada Fashion</strong>.</p><script>alert(1)</script><p onclick="steal()">Ask about <a href="javascript:alert(1)">their stock</a>.</p>', notify: true });
+  check('supervisor writes a document for the team', r.status === 201 && r.data.kind === 'document' && r.data.version === 1 && r.data.canManage, r.data);
+  const scriptDoc = r.data.id;
+  check('…the HTML is cleaned (no scripts, handlers or javascript: links)', !/script|onclick|javascript/.test(r.data.body) && /<strong>from Ada Fashion<\/strong>/.test(r.data.body), r.data.body);
+  r = await staff('GET', '/notifications');
+  check('the team is told it was shared', r.data.items.some((n) => n.type === 'resource.shared' && /Field sales script/.test(n.title)), r.data.items.map((n) => n.title));
+  r = await staff('GET', '/resources');
+  check('team members see it', r.data.some((x) => x.id === scriptDoc && !x.canManage), r.data);
+  r = await staff('PATCH', `/resources/${scriptDoc}`, { body: '<p>hacked</p>' });
+  check('team members can’t edit it', r.status === 403);
+  r = await sup('PATCH', `/resources/${scriptDoc}`, { body: '<h2>Opening</h2><p>Good morning! Version two.</p>' });
+  check('supervisor edits it → version 2, old one kept', r.data.version === 2 && r.data.versions.length === 1 && r.data.versions[0].version === 1, r.data);
+  r = await staff('GET', `/resources/${scriptDoc}/versions/1`);
+  check('anyone in the team can read an older version', r.status === 200 && /from Ada Fashion/.test(r.data.body), r.data);
+
+  const brochure = new FormData();
+  brochure.append('kind', 'file');
+  brochure.append('audienceType', 'team');
+  brochure.append('audienceId', String(teamId));
+  brochure.append('title', 'Price list');
+  brochure.append('file', new Blob(['%PDF-1.4 fake price list v1'], { type: 'application/pdf' }), 'prices-v1.pdf');
+  r = await sup('POST', '/resources', brochure);
+  check('upload a PDF for the team', r.status === 201 && r.data.kind === 'file' && r.data.file_name === 'prices-v1.pdf', r.data);
+  const priceList = r.data.id;
+  r = await sup('PATCH', `/resources/${priceList}`, { body: '<p>edit the pdf</p>' });
+  check('uploaded files can’t be edited in Workard', r.status === 422, r.data);
+  const v2 = new FormData();
+  v2.append('file', new Blob(['%PDF-1.4 fake price list v2'], { type: 'application/pdf' }), 'prices-v2.pdf');
+  r = await sup('POST', `/resources/${priceList}/file`, v2);
+  check('…upload a new version instead (the old one is kept)', r.data.version === 2 && r.data.file_name === 'prices-v2.pdf' && r.data.versions[0].file_name === 'prices-v1.pdf', r.data);
+  r = await sup('POST', `/resources/${priceList}/send`, { email: true, message: 'New prices from Monday' });
+  check('“send to team” tells everyone in it', r.data.people >= 1 && /Price list/.test(lastEmail(staffEmail)?.subject), [r.data, lastEmail(staffEmail)?.subject]);
+  r = await sup('POST', '/resources', { kind: 'document', audienceType: 'company', title: 'Company handbook', body: '<p>Hi</p>' });
+  check('a supervisor can’t share with the whole company', r.status === 403, r.data);
+  r = await owner('POST', '/resources', { kind: 'document', audienceType: 'company', title: 'Company handbook', body: '<p>Welcome to Ada Fashion House.</p>' });
+  check('the owner shares with everyone', r.status === 201 && r.data.audience_name === 'Everyone', r.data);
+  r = await staff('DELETE', `/resources/${priceList}`);
+  check('team members can’t delete materials', r.status === 403);
+
+  console.log('\nProjects & tasks with several people');
+  r = await sup('GET', '/projects/groups');
+  check('supervisor can create projects for their team', r.data.length === 1 && r.data[0].type === 'team', r.data);
+  r = await sup('POST', '/projects', { name: 'Lekki store launch', audienceType: 'team', audienceId: teamId, color: '#eb6834', dueDate: '2026-12-15' });
+  check('create a project for the team', r.status === 201 && r.data.audience_name === 'Field Sales team' && r.data.canManage, r.data);
+  const projectId = r.data.id;
+  r = await staff('POST', '/projects', { name: 'My own', audienceType: 'team', audienceId: teamId });
+  check('an employee can’t create projects', r.status === 403);
+  r = await sup('POST', '/tasks', { title: 'Visit 20 stores in Lekki', projectId, assigneeIds: [staffId, supId], dueDate: '2026-12-01', checklist: [] });
+  check('a task for two people inside the project (first = lead)', r.status === 201 && r.data.assignees.length === 2 && r.data.assignees[0].id === staffId && r.data.assignees[0].is_lead && r.data.project_name === 'Lekki store launch', r.data);
+  const sharedTask = r.data.id;
+  r = await staff('GET', '/notifications');
+  check('everyone on it gets a bell notification', r.data.items.some((n) => n.type === 'task.assigned' && /Visit 20 stores/.test(n.title)), r.data.items.map((n) => n.title));
+  r = await sup('GET', '/tasks?view=mine');
+  check('…and it’s in each person’s “My tasks” (not only the lead’s)', r.data.tasks.some((t) => t.id === sharedTask), r.data.tasks.map((t) => t.title));
+  r = await staff('PATCH', `/tasks/${sharedTask}/status`, { status: 'in_progress' });
+  check('anyone on the task can move it along', r.status === 200 && r.data.status === 'in_progress', r.data);
+  r = await staff('POST', `/tasks/${sharedTask}/comments`, { body: 'Done 8 so far' });
+  r = await sup('GET', '/notifications');
+  check('comments reach everyone on the task', r.data.items.some((n) => n.type === 'task.comment' && /Chidi Eze commented/.test(n.title)), r.data.items.map((n) => n.title));
+  r = await sup('POST', '/tasks', { title: 'Print flyers', projectId, assigneeIds: [staffId], checklist: [] });
+  await staff('PATCH', `/tasks/${r.data.id}/status`, { status: 'done' });
+  r = await staff('GET', `/projects/${projectId}`);
+  const chidiOnBoard = r.data.people?.find((p) => p.first_name === 'Chidi');
+  check('project board: tasks, progress and each person’s share', r.data.task_total === 2 && r.data.task_done === 1 && chidiOnBoard?.done === 1 && chidiOnBoard?.in_progress === 1 && r.data.people.some((p) => p.first_name === 'Bola' && p.in_progress === 1), r.data);
+  r = await staff('GET', '/projects');
+  check('team members see the project', r.data.some((p) => p.id === projectId && !p.canManage), r.data);
+  r = await staff('PATCH', `/projects/${projectId}`, { name: 'Hijacked' });
+  check('…but can’t change it', r.status === 403);
+  r = await sup('POST', '/tasks', { title: 'Outside help', assigneeIds: [staffId, otherId], checklist: [] });
+  check('you can only add people you manage to a task', r.status === 422, r.data);
+  r = await sup('PATCH', `/tasks/${sharedTask}`, { assigneeIds: [staffId] });
+  check('change who’s on a task', r.data.assignees.length === 1 && r.data.assignees[0].id === staffId, r.data.assignees);
+  r = await sup('GET', `/tasks?projectId=${projectId}&view=team`);
+  check('filter tasks by project', r.data.tasks.length === 2, r.data.tasks.map((t) => t.title));
+  r = await sup('DELETE', `/projects/${projectId}`);
+  r = await sup('GET', `/tasks/${sharedTask}`);
+  check('deleting a project keeps its tasks', r.status === 200 && r.data.project_id === null, r.data);
+
+  console.log('\nMeetings & stand-ups (LiveKit)');
+  const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+  const nowTime = new Date().toLocaleTimeString('en-GB', { timeZone: 'Africa/Lagos', hour: '2-digit', minute: '2-digit' });
+  r = await sup('GET', '/meetings/groups');
+  check('supervisor can schedule meetings for their team', r.data.length === 1 && r.data[0].type === 'team', r.data);
+  const weekend = [0, 6].includes(new Date(`${todayIso}T12:00:00`).getDay()); // tests can run on a Saturday too
+  r = await sup('POST', '/meetings', { title: 'Daily stand-up', audienceType: 'team', audienceId: teamId, date: todayIso, time: nowTime, durationMinutes: 15, repeat: weekend ? 'daily' : 'weekdays', isStandup: true });
+  check('schedule a daily stand-up for the team (weekdays)', r.status === 201 && r.data.audience_name === 'Field Sales team' && r.data.people.some((p) => p.first_name === 'Chidi'), r.data);
+  const standupId = r.data.id;
+  r = await staff('GET', '/notifications');
+  check('the team is invited (bell)', r.data.items.some((n) => n.type === 'meeting.invited' && /Daily stand-up/.test(n.title)), r.data.items.map((n) => n.title));
+  check('…and by email', /Invitation: Daily stand-up/.test(lastEmail(staffEmail)?.subject), lastEmail(staffEmail)?.subject);
+  r = await staff('GET', `/meetings?from=${todayIso}&to=${addDaysIso(todayIso, 13)}`);
+  const occ = r.data.filter((m) => m.meetingId === standupId);
+  check('the calendar shows each weekday (10 in two weeks)', weekend ? occ.length === 14 : occ.length === 10 && occ.every((o) => ![0, 6].includes(new Date(`${o.date}T12:00:00`).getDay())), occ.map((o) => o.date));
+  r = await sup('POST', '/meetings', { title: 'All hands', audienceType: 'company', date: todayIso, time: '09:00' });
+  check('a supervisor can’t schedule for the whole company', r.status === 403);
+  r = await staff('POST', '/meetings', { title: 'Coffee chat', audienceType: 'people', inviteeIds: [supId], date: addDaysIso(todayIso, 1), time: '10:00' });
+  check('anyone can invite chosen people', r.status === 201 && r.data.people.length === 2, r.data);
+  const chatId = r.data.id;
+  r = await owner('GET', `/meetings/${chatId}`);
+  check('people not invited can’t see a private meeting', r.status === 404);
+
+  r = await staff('POST', `/meetings/${standupId}/join?date=${todayIso}`);
+  const payload = r.data.token ? JSON.parse(Buffer.from(r.data.token.split('.')[1], 'base64url').toString()) : {};
+  check('joining gives a LiveKit token for today’s room only', r.status === 200 && r.data.url === 'wss://test.livekit.cloud' && payload.video?.room === r.data.room && payload.video?.roomJoin === true && r.data.room.endsWith(todayIso) && payload.name === 'Chidi Eze', [r.data, payload]);
+  r = await owner('POST', `/meetings/${chatId}/join?date=${addDaysIso(todayIso, 1)}`);
+  check('people who aren’t invited can’t join', r.status === 404, r.data);
+  r = await staff('POST', `/meetings/${chatId}/join?date=${addDaysIso(todayIso, 1)}`);
+  check('the room only opens 15 minutes before', r.status === 409 && /room opens/.test(r.data.message), r.data);
+
+  await pool.query("UPDATE tasks SET status = 'done', completed_at = NOW() WHERE id = ?", [sharedTask]);
+  r = await sup('GET', `/meetings/${standupId}/standup?date=${todayIso}`);
+  const chidiStandup = r.data.people?.find((p) => p.first_name === 'Chidi');
+  check('stand-up board: each person’s done / doing tasks, and who joined', chidiStandup?.done.some((t) => t.title === 'Visit 20 stores in Lekki') && chidiStandup.joined === true && r.data.people.some((p) => p.first_name === 'Bola' && p.joined === false), r.data.people);
+  r = await staff('PATCH', `/meetings/${standupId}`, { title: 'Hijacked' });
+  check('only the organiser can change it', r.status === 403);
+  r = await sup('DELETE', `/meetings/${standupId}`);
+  r = await staff('GET', '/notifications');
+  check('cancelling tells everyone', r.data.items.some((n) => n.type === 'meeting.cancelled'), r.data.items.map((n) => n.type));
+  r = await staff('POST', `/meetings/${standupId}/join?date=${todayIso}`);
+  check('a cancelled meeting can’t be joined', r.status === 404 || r.status === 409, r.data);
 
   console.log('\nDashboard & roles');
   r = await owner('GET', '/dashboard');

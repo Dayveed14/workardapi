@@ -1,5 +1,5 @@
 // ============================================================
-// PLANS — what each yearly subscription includes.
+// PLANS — what each subscription includes, paid monthly or yearly.
 // Change prices, features or limits HERE only; the API and the
 // pricing on the home page both read from this list (the client
 // keeps a copy in src/config/plans.js — keep them in step).
@@ -28,11 +28,15 @@ export const billing = {
 
 export const PLAN_ORDER = ['starter', 'business', 'enterprise'];
 
+// How often an organisation can pay. Paystack charges the saved card again automatically.
+export const INTERVALS = ['monthly', 'yearly'];
+
 export const PLANS = {
   starter: {
     id: 'starter',
     name: 'Starter',
-    priceKobo: 25_000_000, // ₦250,000 a year
+    // ₦15,000 a month, or ₦12,999 a month paid yearly (₦155,988)
+    prices: { monthly: 1_500_000, yearly: 15_598_800 },
     features: ['hr'],
     maxEmployees: 10,
     maxBranches: 1,
@@ -41,7 +45,8 @@ export const PLANS = {
   business: {
     id: 'business',
     name: 'Business',
-    priceKobo: 60_000_000, // ₦600,000 a year
+    // ₦35,000 a month, or ₦32,999 a month paid yearly (₦395,988)
+    prices: { monthly: 3_500_000, yearly: 39_598_800 },
     features: ['hr', 'tasks', 'reviews', 'payroll', 'crm', 'invoices', 'finance'],
     maxEmployees: null,
     maxBranches: 3,
@@ -50,7 +55,8 @@ export const PLANS = {
   enterprise: {
     id: 'enterprise',
     name: 'Enterprise',
-    priceKobo: 100_000_000, // ₦1,000,000 a year
+    // ₦55,000 a month, or ₦53,999 a month paid yearly (₦647,988)
+    prices: { monthly: 5_500_000, yearly: 64_798_800 },
     features: ['hr', 'tasks', 'reviews', 'payroll', 'crm', 'invoices', 'finance', 'calls'],
     maxEmployees: null,
     maxBranches: null,
@@ -58,11 +64,8 @@ export const PLANS = {
   },
 };
 
-// Days the app keeps working after the year ends, while the owner renews
+// Days the app keeps working after a period ends without payment (e.g. the card was declined)
 export const GRACE_DAYS = 7;
-
-// Renewing early is allowed in the last RENEW_WINDOW_DAYS of the year
-export const RENEW_WINDOW_DAYS = 60;
 
 export const FEATURE_NAMES = {
   hr: 'Employees & HR',

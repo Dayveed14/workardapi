@@ -3,11 +3,11 @@ import * as invoiceModel from '../models/invoiceModel.js';
 import * as auditModel from '../models/auditModel.js';
 import * as userModel from '../models/userModel.js';
 import * as organizationModel from '../models/organizationModel.js';
-import { uploadFile, deleteFile } from './uploadService.js';
-import { cloudinaryEnabled } from '../config/cloudinary.js';
+import { storeFile, deleteFile } from './uploadService.js';
 import { sendEmail, invoiceAcceptedEmail } from './emailService.js';
 import { env } from '../config/env.js';
 import { toDateString } from '../utils/dates.js';
+import { notify } from './notificationService.js';
 import AppError from '../utils/AppError.js';
 
 // ============================================================
@@ -39,20 +39,9 @@ export async function updateBranding(auth, data) {
 // Logo or signature image. Cloudinary when it's set up; in development without it,
 // small images are kept in the database instead so you can still try it out.
 export async function setImage(auth, kind, file) {
-  if (!file) throw new AppError(422, 'Choose an image (PNG, JPG or WebP)');
   const current = await brandingModel.find(auth.orgId);
 
-  let url;
-  let publicId = null;
-  if (cloudinaryEnabled || env.isProd) {
-    const uploaded = await uploadFile(file, { orgId: auth.orgId, subfolder: 'branding' });
-    url = uploaded.url;
-    publicId = uploaded.publicId;
-  } else {
-    if (file.size > 300 * 1024) throw new AppError(422, 'Without Cloudinary, keep the image under 300 KB');
-    url = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-  }
-
+  const { url, publicId } = await storeFile(file, { orgId: auth.orgId, subfolder: 'branding' });
   await brandingModel.setImage(auth.orgId, kind, url, publicId);
   await deleteFile(current?.[`${kind}_public_id`], 'image'); // the old one
   await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: `invoice_branding.${kind}_changed` });
@@ -90,7 +79,13 @@ export async function acceptInvoice(token, { name, signature, note }, ip) {
     details: `${invoice.invoice_number} by ${name}${note ? `: ${note}` : ''}`,
   });
 
-  // Tell whoever created the invoice
+  // Tell whoever created the invoice (bell + email)
+  await notify(invoice.organization_id, [invoice.created_by], {
+    type: 'invoice.accepted',
+    title: `${name} (${invoice.customer_name}) accepted invoice ${invoice.invoice_number}`,
+    body: note || null,
+    link: `/invoices/${invoice.id}`,
+  });
   const creator = invoice.created_by ? await userModel.findById(invoice.created_by) : null;
   if (creator?.email) {
     const organization = await organizationModel.findById(invoice.organization_id);

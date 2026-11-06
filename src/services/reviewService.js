@@ -7,6 +7,7 @@ import * as organizationModel from '../models/organizationModel.js';
 import * as auditModel from '../models/auditModel.js';
 import { withTransaction } from '../config/db.js';
 import { sendEmail, reviewEmail } from './emailService.js';
+import { notifyEmployees } from './notificationService.js';
 import { managedCondition } from '../utils/scope.js';
 import { toDateString, countWorkingDays, periodRange, periodFor } from '../utils/dates.js';
 import { env } from '../config/env.js';
@@ -89,7 +90,15 @@ export async function buildFacts(employeeId, periodStart, periodEnd) {
 
 const reviewLink = (id) => `${env.clientUrls[0]}/reviews/${id}`;
 
+const REVIEW_BELL = {
+  self_review: 'Your performance review has started — rate yourself',
+  acknowledgement: 'Your performance review is ready — read & confirm',
+};
+
 async function emailEmployee(orgId, review, stage) {
+  if (REVIEW_BELL[stage]) {
+    await notifyEmployees(orgId, [review.employee_id], { type: `review.${stage}`, title: `${REVIEW_BELL[stage]} (${review.period})`, link: `/reviews/${review.id}` });
+  }
   const employee = await employeeModel.findById(orgId, review.employee_id);
   if (!employee?.email) return;
   const org = await organizationModel.findById(orgId);

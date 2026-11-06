@@ -11,7 +11,7 @@ import * as leaveModel from '../models/leaveModel.js';
 import * as holidayModel from '../models/holidayModel.js';
 import { monthAdherence, previousMonth } from '../utils/adherence.js';
 import * as explanationModel from '../models/explanationModel.js';
-import { reviewersFor, emailEach } from './notificationService.js';
+import { reviewersFor, emailEach, notify, notifyEmployees } from './notificationService.js';
 import { flagForEmployeeEmail, flagForManagerEmail, flagDecisionEmail } from './emailService.js';
 import { env } from '../config/env.js';
 import AppError from '../utils/AppError.js';
@@ -310,11 +310,23 @@ async function notifyEmployeeOfFlag(orgId, employeeId, reason, clockInAt) {
   await emailEach([{ email: employee?.email }], () =>
     flagForEmployeeEmail({ firstName: employee.first_name, reason, deadline: formatDeadline(deadline), link: `${env.clientUrls[0]}/attendance` })
   );
+  await notifyEmployees(orgId, [employeeId], {
+    type: 'attendance.flagged',
+    title: `Your clock-in was flagged — explain by ${formatDeadline(deadline)}`,
+    body: reason,
+    link: '/attendance',
+  });
 }
 
 async function notifyReviewers(orgId, record, response, explanation) {
   const reviewers = await reviewersFor(orgId, record.employee_id, 'attendance.review');
   const employeeName = `${record.first_name} ${record.last_name}`;
+  await notify(orgId, reviewers.map((r) => r.userId), {
+    type: 'attendance.to_review',
+    title: `Flagged clock-in to review: ${employeeName}`,
+    body: response === 'no_response' ? 'No response within 24 hours' : `${response === 'dispute' ? 'Disputes it' : 'Accepts it'}: ${explanation}`,
+    link: '/attendance?tab=flagged',
+  });
   await emailEach(reviewers, (r) =>
     flagForManagerEmail({
       managerName: r.name.split(' ')[0],
@@ -419,5 +431,12 @@ export async function reviewFlagged(auth, attendanceId, { decision, note }) {
   await emailEach([{ email: employee.email }], () =>
     flagDecisionEmail({ firstName: employee.first_name, workDate: record.work_date, decision, note })
   );
+  await notifyEmployees(auth.orgId, [employee.id], {
+    type: `attendance.${decision}`,
+    title: `Your clock-in on ${record.work_date} was ${decision === 'approved' ? 'accepted (counts as present)' : 'rejected (counts as absent)'}`,
+    body: note || null,
+    link: '/attendance',
+    actorUserId: auth.userId,
+  });
   return attendanceModel.findById(auth.orgId, attendanceId);
 }

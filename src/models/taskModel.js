@@ -8,6 +8,7 @@ const EDITABLE = {
   dueDate: 'due_date',
   priority: 'priority',
   customerId: 'customer_id',
+  projectId: 'project_id',
 };
 
 // Task + who it's for + who set it + checklist progress.
@@ -17,13 +18,15 @@ const SELECT_TASK = `
          e.first_name, e.last_name, e.photo_url, e.job_title, e.user_id AS assignee_user_id,
          u.full_name AS created_by_name,
          c.name AS customer_name,
+         p.name AS project_name, p.color AS project_color,
          (SELECT COUNT(*) FROM task_checklist_items ci WHERE ci.task_id = t.id) AS checklist_total,
          (SELECT COUNT(*) FROM task_checklist_items ci WHERE ci.task_id = t.id AND ci.is_done = 1) AS checklist_done,
          (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id) AS comment_count
     FROM tasks t
     JOIN employees e ON e.id = t.assigned_employee_id
     LEFT JOIN users u ON u.id = t.created_by
-    LEFT JOIN customers c ON c.id = t.customer_id`;
+    LEFT JOIN customers c ON c.id = t.customer_id
+    LEFT JOIN projects p ON p.id = t.project_id`;
 
 export async function create(orgId, data, db = pool) {
   const columns = ['organization_id', 'created_by', 'recurring_task_id'];
@@ -49,7 +52,9 @@ export async function createFromRecurring(rec, dueDate, db = pool) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [rec.organization_id, rec.title, rec.description, rec.assigned_employee_id, rec.priority, dueDate, rec.id, rec.created_by]
   );
-  return result.affectedRows === 1 ? result.insertId : null;
+  if (result.affectedRows !== 1) return null;
+  await setAssignees(result.insertId, [rec.assigned_employee_id], db);
+  return result.insertId;
 }
 
 export async function update(orgId, id, data, db = pool) {
@@ -97,8 +102,13 @@ export async function list(orgId, visible, filters, db = pool) {
   const params = [orgId, ...visible.params];
 
   if (filters.assigneeId) {
-    where.push('t.assigned_employee_id = ?');
+    // anyone on the task, not just the lead
+    where.push('EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.employee_id = ?)');
     params.push(filters.assigneeId);
+  }
+  if (filters.projectId) {
+    where.push('t.project_id = ?');
+    params.push(filters.projectId);
   }
   if (filters.createdBy) {
     where.push('t.created_by = ?');
@@ -141,7 +151,7 @@ export async function list(orgId, visible, filters, db = pool) {
     `SELECT COUNT(*) AS total FROM tasks t JOIN employees e ON e.id = t.assigned_employee_id WHERE ${whereSql}`,
     params
   );
-  return { rows, total: Number(countRows[0].total) };
+  return { rows: await withAssignees(rows, db), total: Number(countRows[0].total) };
 }
 
 // Counts for the dashboard / "My tasks" header
@@ -168,7 +178,7 @@ export async function statsForEmployee(employeeId, from, to, db = pool) {
        SUM(status = 'done' AND (due_date IS NULL OR DATE(completed_at) <= due_date)) AS on_time,
        SUM(status IN ('todo','in_progress') AND due_date <= ?) AS still_open
      FROM tasks
-     WHERE assigned_employee_id = ? AND status <> 'cancelled' AND due_date BETWEEN ? AND ?`,
+     WHERE id IN (SELECT task_id FROM task_assignees WHERE employee_id = ?) AND status <> 'cancelled' AND due_date BETWEEN ? AND ?`,
     [to, employeeId, from, to]
   );
   const r = rows[0];
@@ -186,13 +196,41 @@ export async function listDueForDigest(today, db = pool) {
     `SELECT t.id, t.title, t.due_date, t.priority, t.organization_id,
             e.id AS employee_id, e.first_name, e.email, o.name AS organization_name
        FROM tasks t
-       JOIN employees e ON e.id = t.assigned_employee_id AND e.status = 'active'
+       JOIN task_assignees ta ON ta.task_id = t.id
+       JOIN employees e ON e.id = ta.employee_id AND e.status = 'active'
        JOIN organizations o ON o.id = t.organization_id
       WHERE t.status IN ('todo','in_progress') AND t.due_date <= ?
       ORDER BY e.id, t.due_date`,
     [today]
   );
   return rows;
+}
+
+// ---------- Everyone on a task (the lead is tasks.assigned_employee_id) ----------
+export async function setAssignees(taskId, employeeIds, db = pool) {
+  const ids = [...new Set(employeeIds.map(Number))];
+  await db.query('DELETE FROM task_assignees WHERE task_id = ? AND employee_id NOT IN (?)', [taskId, ids]);
+  await db.query('INSERT IGNORE INTO task_assignees (task_id, employee_id) VALUES ?', [ids.map((id) => [taskId, id])]);
+}
+
+// { taskId: [{ id, first_name, last_name, photo_url, user_id }] } — the lead first
+export async function assigneesFor(taskIds, db = pool) {
+  if (!taskIds.length) return {};
+  const [rows] = await db.query(
+    `SELECT ta.task_id, e.id, e.first_name, e.last_name, e.photo_url, e.user_id, e.email, (t.assigned_employee_id = e.id) AS is_lead
+       FROM task_assignees ta JOIN employees e ON e.id = ta.employee_id JOIN tasks t ON t.id = ta.task_id
+      WHERE ta.task_id IN (?) ORDER BY is_lead DESC, e.first_name, e.last_name`,
+    [taskIds]
+  );
+  const map = {};
+  for (const r of rows) (map[r.task_id] ||= []).push({ id: r.id, first_name: r.first_name, last_name: r.last_name, photo_url: r.photo_url, user_id: r.user_id, email: r.email, is_lead: Boolean(r.is_lead) });
+  return map;
+}
+
+// Add `assignees` to each task row
+export async function withAssignees(rows, db = pool) {
+  const map = await assigneesFor(rows.map((r) => r.id), db);
+  return rows.map((r) => ({ ...r, assignees: map[r.id] || [] }));
 }
 
 // ---------- Checklist ----------

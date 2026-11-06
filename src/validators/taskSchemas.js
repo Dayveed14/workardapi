@@ -10,6 +10,8 @@ export const createTaskSchema = z.object({
   dueDate: optionalDate,
   priority,
   customerId: optionalId,
+  projectId: optionalId,
+  assigneeIds: z.array(z.coerce.number().int().positive()).max(20).optional(), // several people (first = lead)
   checklist: z.array(z.string().trim().min(1).max(255)).max(50).default([]),
 });
 
@@ -19,6 +21,9 @@ export const updateTaskSchema = z.object({
   assignedEmployeeId: optionalId,
   dueDate: optionalDate,
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+  // left out = unchanged; "" or null = take it out of its project
+  projectId: z.preprocess((v) => (v === '' ? null : v), z.coerce.number().int().positive().nullable().optional()),
+  assigneeIds: z.array(z.coerce.number().int().positive()).min(1).max(20).optional(),
 });
 
 export const statusSchema = z.object({
@@ -31,6 +36,7 @@ export const listTasksSchema = z.object({
   due: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['overdue', 'today', 'week']).optional()),
   assigneeId: optionalId,
   customerId: optionalId,
+  projectId: optionalId,
   search: optionalText(100),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(30),

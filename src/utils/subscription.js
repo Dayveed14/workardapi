@@ -1,12 +1,12 @@
-import { PLANS, GRACE_DAYS, RENEW_WINDOW_DAYS, billing } from '../config/plans.js';
+import { PLANS, GRACE_DAYS, billing } from '../config/plans.js';
 import { toDateString, addDays } from './dates.js';
 
 // Turns a `subscriptions` row into what the app needs to know:
 //   status   free            → billing is switched off (BILLING_ENABLED=false): everything, no charge
 //            trial           → free trial of the chosen plan (TRIAL_DAYS)
 //            trial_ended     → trial over, locked until the owner pays
-//            active          → paid and within the year
-//            grace           → the year ended less than GRACE_DAYS ago (still works, renew now)
+//            active          → paid and within the month / year
+//            grace           → the period ended less than GRACE_DAYS ago without payment (still works)
 //            expired         → locked until the owner pays
 //   usable   can the organisation use the app right now?
 //
@@ -23,7 +23,6 @@ export function describeSubscription(row, today = toDateString()) {
       billingEnabled: billing.enabled,
       periodEnd: null,
       daysLeft: null,
-      canRenew: false,
       features: plan.features,
       limits: limitsOf(plan),
     };
@@ -43,7 +42,6 @@ export function describeSubscription(row, today = toDateString()) {
       billingEnabled: false,
       periodEnd: null,
       daysLeft: null,
-      canRenew: false,
       features: plan.features,
       limits: limitsOf(plan),
     };
@@ -66,7 +64,6 @@ export function describeSubscription(row, today = toDateString()) {
       billingEnabled: true,
       periodEnd: trialEnd,
       daysLeft: daysBetween(today, trialEnd),
-      canRenew: false,
       features: plan.features,
       limits: limitsOf(plan),
     };
@@ -87,7 +84,6 @@ export function describeSubscription(row, today = toDateString()) {
     billingEnabled: billing.enabled,
     periodEnd: row.current_period_end,
     daysLeft,
-    canRenew: daysLeft === null || daysLeft <= RENEW_WINDOW_DAYS,
     features: plan.features,
     limits: limitsOf(plan),
   };
@@ -103,11 +99,16 @@ export function daysBetween(from, to) {
   return Math.round((b - a) / 86400000);
 }
 
-// A paid year runs from `start` up to the day before the same date next year
-// (1 Mar 2026 → 28 Feb 2027).
-export function oneYearFrom(start) {
+// A paid period runs from `start` up to the day before the same date next month / year
+//   monthly: 15 Jan → 14 Feb   (31 Jan → 27 Feb: February has no 31st, so the next month starts 28 Feb)
+//   yearly:  1 Mar 2026 → 28 Feb 2027
+export function periodEnd(start, interval) {
   const [y, m, d] = start.split('-').map(Number);
-  const next = new Date(y + 1, m - 1, d);
+  const next = interval === 'monthly' ? new Date(y, m, Math.min(d, daysInMonth(y, m + 1))) : new Date(y + 1, m - 1, d);
   next.setDate(next.getDate() - 1);
   return toDateString(next);
 }
+
+const daysInMonth = (year, month) => new Date(year, month, 0).getDate(); // month 1-12
+
+export const oneYearFrom = (start) => periodEnd(start, 'yearly');

@@ -20,12 +20,14 @@ const EDITABLE = {
 const SELECT_CUSTOMER = `
   SELECT c.*,
          CONCAT(e.first_name, ' ', e.last_name) AS assigned_name,
+         ab.full_name AS assigned_by_name,
          (SELECT COALESCE(SUM(i.total_kobo - i.amount_paid_kobo), 0) FROM invoices i
            WHERE i.customer_id = c.id AND i.status IN ('sent','partially_paid')) AS balance_kobo,
          (SELECT COALESCE(SUM(p.amount_kobo), 0) FROM invoice_payments p WHERE p.customer_id = c.id) AS lifetime_paid_kobo,
          (SELECT MAX(ci.created_at) FROM customer_interactions ci WHERE ci.customer_id = c.id) AS last_activity_at
     FROM customers c
-    LEFT JOIN employees e ON e.id = c.assigned_employee_id`;
+    LEFT JOIN employees e ON e.id = c.assigned_employee_id
+    LEFT JOIN users ab ON ab.id = c.assigned_by`;
 
 export async function create(orgId, data, db = pool) {
   const columns = ['organization_id', 'created_by'];
@@ -54,6 +56,26 @@ export async function update(orgId, id, data, db = pool) {
   }
   if (!sets.length) return;
   await db.query(`UPDATE customers SET ${sets.join(', ')} WHERE organization_id = ? AND id = ?`, [...values, orgId, id]);
+}
+
+// Customers someone else gave to this employee, newest first (dashboard "Assigned to you")
+export async function listAssignedByOthers(orgId, employeeId, userId, limit = 5, db = pool) {
+  const [rows] = await db.query(
+    `${SELECT_CUSTOMER}
+      WHERE c.organization_id = ? AND c.assigned_employee_id = ? AND c.assigned_by IS NOT NULL AND c.assigned_by <> ?
+        AND c.stage IN ('lead','prospect','customer')
+      ORDER BY c.assigned_at DESC LIMIT ?`,
+    [orgId, employeeId, userId, limit]
+  );
+  return rows;
+}
+
+// Who handles the customer now, and who gave it to them
+export async function setAssignment(orgId, id, employeeId, byUserId, db = pool) {
+  await db.query(
+    'UPDATE customers SET assigned_employee_id = ?, assigned_by = ?, assigned_at = NOW() WHERE organization_id = ? AND id = ?',
+    [employeeId, byUserId, orgId, id]
+  );
 }
 
 // Move a customer to a new stage and keep the history (does nothing if it's already there)

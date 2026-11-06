@@ -29,6 +29,7 @@ import { formatNaira } from '../utils/money.js';
 import { monthRange, countWorkingDays, toDateString } from '../utils/dates.js';
 import { encrypt } from '../utils/encryption.js';
 import * as paystackService from './paystackService.js';
+import { repaymentLines, recordRepaymentsForRun } from './staffRequestService.js';
 import AppError from '../utils/AppError.js';
 
 // ---------- Settings ----------
@@ -90,14 +91,16 @@ function payableDays(row, from, to, unpaidLeave) {
   return { daysInPeriod, daysPayable, unpaidLeaveDays };
 }
 
-function computeItem(row, settings, days, adjustments = {}) {
+// repayments: this month's loan / advance repayments for this employee (payslip lines)
+function computeItem(row, settings, days, adjustments = {}, repayments = []) {
+  const repaying = repayments.reduce((sum, l) => sum + l.amountKobo, 0);
   const result = calculatePay(
     {
       basic: Number(row.basic_kobo),
       housing: Number(row.housing_kobo),
       transport: Number(row.transport_kobo),
       allowances: Number(row.allowances_kobo),
-      otherDeductions: Number(row.deductions_kobo),
+      otherDeductions: Number(row.deductions_kobo) + repaying,
       annualRent: Number(row.annual_rent_kobo),
       nhfOptIn: !!row.nhf_opt_in,
     },
@@ -108,17 +111,18 @@ function computeItem(row, settings, days, adjustments = {}) {
       payableFraction: days.daysInPeriod ? days.daysPayable / days.daysInPeriod : 0,
     }
   );
-  return { ...result, ...days, breakdown: [] };
+  return { ...result, ...days, breakdown: repayments };
 }
 
 // Builds every payslip for the run. Keeps any bonus / one-off deduction already entered.
 async function buildItems(orgId, run, db) {
   const settings = settingsForCalc(await payrollSettingsModel.get(orgId, db));
   const { from, to } = monthRange(run.period);
-  const [rows, unpaidLeave, existing] = await Promise.all([
+  const [rows, unpaidLeave, existing, repayments] = await Promise.all([
     employeePayModel.listPayable(orgId, to, db),
     leaveModel.listUnpaidInRange(orgId, from, to, db),
     payrollRunModel.listItems(run.id, db),
+    repaymentLines(orgId, db), // salary advances & staff loans being repaid
   ]);
 
   const kept = Object.fromEntries(
@@ -128,7 +132,7 @@ async function buildItems(orgId, run, db) {
   await payrollRunModel.deleteItems(run.id, db);
   for (const row of rows) {
     const days = payableDays(row, from, to, unpaidLeave);
-    await payrollRunModel.createItem(orgId, run.id, row.employee_id, computeItem(row, settings, days, kept[row.employee_id]), db);
+    await payrollRunModel.createItem(orgId, run.id, row.employee_id, computeItem(row, settings, days, kept[row.employee_id], repayments[row.employee_id]), db);
   }
   await payrollRunModel.refreshTotals(run.id, db);
 }
@@ -211,7 +215,9 @@ export async function adjustItem(auth, itemId, { bonusKobo, oneOffDeductionKobo 
     if (!row) throw new AppError(409, 'This employee is no longer payable — recalculate the payroll');
 
     const days = { daysInPeriod: item.days_in_period, daysPayable: item.days_payable, unpaidLeaveDays: item.unpaid_leave_days };
-    const result = computeItem(row, settings, days, { bonus: bonusKobo, oneOffDeduction: oneOffDeductionKobo });
+    // keep this month's loan / advance repayments that are already on the payslip
+    const repayments = (typeof item.breakdown === 'string' ? JSON.parse(item.breakdown || '[]') : item.breakdown || []).filter((l) => l.kind === 'repayment');
+    const result = computeItem(row, settings, days, { bonus: bonusKobo, oneOffDeduction: oneOffDeductionKobo }, repayments);
     if (result.net < 0) throw new AppError(422, 'Deductions are more than this person’s pay');
     await payrollRunModel.updateItem(item.id, result, db);
     await payrollRunModel.refreshTotals(run.id, db);
@@ -272,6 +278,7 @@ export async function afterPaid(orgId, runId, userId = null) {
   const run = await getRunOrFail(orgId, runId);
   if (run.status !== 'paid') return;
   await recordExpenses(orgId, run, userId);
+  await recordRepaymentsForRun(orgId, run.id); // loans & advances: this month's repayments count
   await notifyStaff(orgId, run);
   await auditModel.log({
     orgId,

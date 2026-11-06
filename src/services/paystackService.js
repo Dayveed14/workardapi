@@ -70,7 +70,8 @@ export function isValidSignature(rawBody, signature, secretKey) {
 // ---------- Accepting a payment (used for Workard's own subscription billing) ----------
 // https://paystack.com/docs/payments/accept-payments/
 // Starts a payment and returns the Paystack checkout page to send the customer to.
-export async function initializeTransaction(secretKey, { email, amountKobo, reference, callbackUrl, metadata }) {
+// planCode: also subscribe them to a Paystack plan, so the card is charged again automatically
+export async function initializeTransaction(secretKey, { email, amountKobo, reference, callbackUrl, metadata, planCode }) {
   const data = await request(secretKey, 'POST', '/transaction/initialize', {
     email,
     amount: amountKobo,
@@ -78,6 +79,7 @@ export async function initializeTransaction(secretKey, { email, amountKobo, refe
     reference,
     callback_url: callbackUrl,
     metadata,
+    ...(planCode ? { plan: planCode } : {}),
   });
   return { authorizationUrl: data.authorization_url, reference: data.reference };
 }
@@ -85,5 +87,60 @@ export async function initializeTransaction(secretKey, { email, amountKobo, refe
 // Asks Paystack what happened to a payment. Never trust the browser's word for it.
 export async function verifyTransaction(secretKey, reference) {
   const data = await request(secretKey, 'GET', `/transaction/verify/${encodeURIComponent(reference)}`);
-  return { status: data.status, amountKobo: Number(data.amount), currency: data.currency, paidAt: data.paid_at };
+  return {
+    status: data.status,
+    amountKobo: Number(data.amount),
+    currency: data.currency,
+    paidAt: data.paid_at,
+    customerId: data.customer?.id ?? null,
+    customerCode: data.customer?.customer_code ?? null,
+    authorizationCode: data.authorization?.reusable === false ? null : data.authorization?.authorization_code ?? null,
+  };
+}
+
+// ---------- Subscriptions (automatic monthly / yearly charges) ----------
+// https://paystack.com/docs/payments/subscriptions/
+
+// A Paystack "plan" = a price + how often to charge it
+export async function createPlan(secretKey, { name, interval, amountKobo }) {
+  const data = await request(secretKey, 'POST', '/plan', {
+    name,
+    interval: interval === 'yearly' ? 'annually' : 'monthly',
+    amount: amountKobo,
+    currency: 'NGN',
+  });
+  return data.plan_code;
+}
+
+// Subscribe a customer whose card we already have. startDate = first automatic charge (ISO date-time).
+export async function createSubscription(secretKey, { customerCode, planCode, authorizationCode, startDate }) {
+  const data = await request(secretKey, 'POST', '/subscription', {
+    customer: customerCode,
+    plan: planCode,
+    authorization: authorizationCode,
+    start_date: startDate,
+  });
+  return { subscriptionCode: data.subscription_code, emailToken: data.email_token };
+}
+
+// Stop automatic charges (the current paid period still runs to its end)
+export async function disableSubscription(secretKey, { code, token }) {
+  await request(secretKey, 'POST', '/subscription/disable', { code, token });
+}
+
+// The customer's subscriptions (to find the one Paystack made after the first payment)
+export async function listSubscriptions(secretKey, customerId) {
+  const data = await request(secretKey, 'GET', `/subscription?customer=${encodeURIComponent(customerId)}`);
+  return (data || []).map((s) => ({
+    subscriptionCode: s.subscription_code,
+    emailToken: s.email_token,
+    status: s.status,
+    planCode: s.plan?.plan_code,
+  }));
+}
+
+// A Paystack page where the owner can change the card used for renewals
+export async function manageLink(secretKey, code) {
+  const data = await request(secretKey, 'GET', `/subscription/${encodeURIComponent(code)}/manage/link`);
+  return data.link;
 }

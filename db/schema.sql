@@ -305,6 +305,8 @@ CREATE TABLE IF NOT EXISTS customers (
   stage                 ENUM('lead','prospect','customer','lost','inactive') NOT NULL DEFAULT 'lead',
   source                VARCHAR(60)  NULL,
   assigned_employee_id  BIGINT UNSIGNED NULL,
+  assigned_by           BIGINT UNSIGNED NULL,   -- the user who gave it to them
+  assigned_at           DATETIME NULL,
   notes                 TEXT NULL,
   created_by            BIGINT UNSIGNED NULL,
   created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -598,6 +600,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status                 ENUM('todo','in_progress','done','cancelled') NOT NULL DEFAULT 'todo',
   completed_at           DATETIME NULL,
   customer_id            BIGINT UNSIGNED NULL,
+  project_id             BIGINT UNSIGNED NULL,          -- part of a project (optional)
   recurring_task_id      BIGINT UNSIGNED NULL,          -- made automatically from a repeating task
   created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -744,8 +747,18 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   plan                  ENUM('starter','business','enterprise') NOT NULL,
   status                ENUM('pending_payment','trial','active') NOT NULL DEFAULT 'trial',
   current_period_start  DATE NULL,
-  current_period_end    DATE NULL,      -- last day of the paid year (or of the free trial)
+  current_period_end    DATE NULL,      -- last day of the paid month / year (or of the free trial)
   is_legacy             TINYINT(1) NOT NULL DEFAULT 0,
+  billing_interval      ENUM('monthly','yearly') NULL,
+  -- Paystack automatic renewal (the card is charged again at the end of each period)
+  auto_renew            TINYINT(1) NOT NULL DEFAULT 1,
+  renewal_problem       VARCHAR(255) NULL,        -- e.g. "The card was declined" (shown on Billing)
+  paystack_customer_code      VARCHAR(64) NULL,
+  paystack_authorization_code VARCHAR(64) NULL,
+  paystack_subscription_code  VARCHAR(64) NULL,
+  paystack_email_token        VARCHAR(64) NULL,
+  next_plan             ENUM('starter','business','enterprise') NULL,  -- a change waiting for the next period
+  next_interval         ENUM('monthly','yearly') NULL,
   created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_sub_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
@@ -755,9 +768,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE TABLE IF NOT EXISTS billing_payments (
   id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   organization_id   BIGINT UNSIGNED NOT NULL,
-  reference         VARCHAR(64) NOT NULL,          -- sent to Paystack; one payment = one reference
+  reference         VARCHAR(100) NOT NULL,         -- one payment = one reference (ours: wkbill_…, renewals: Paystack's)
   plan              ENUM('starter','business','enterprise') NOT NULL,
-  kind              ENUM('new','renewal','upgrade') NOT NULL,
+  kind              ENUM('new','renewal','upgrade','auto_renewal') NOT NULL,
+  billing_interval  ENUM('monthly','yearly') NULL,
   amount_kobo       BIGINT NOT NULL,
   status            ENUM('initiated','paid','failed') NOT NULL DEFAULT 'initiated',
   authorization_url VARCHAR(500) NULL,
@@ -769,6 +783,18 @@ CREATE TABLE IF NOT EXISTS billing_payments (
   UNIQUE KEY uq_billing_reference (reference),
   KEY idx_billing_org (organization_id, created_at),
   CONSTRAINT fk_billing_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Paystack "plans" Workard has created (one per plan + interval + price).
+-- Paystack charges subscribers on these automatically every month / year.
+CREATE TABLE IF NOT EXISTS billing_plan_codes (
+  plan              ENUM('starter','business','enterprise') NOT NULL,
+  billing_interval  ENUM('monthly','yearly') NOT NULL,
+  amount_kobo       BIGINT NOT NULL,
+  plan_code         VARCHAR(64) NOT NULL,
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (plan, billing_interval, amount_kobo),
+  UNIQUE KEY uq_plan_code (plan_code)
 ) ENGINE=InnoDB;
 
 -- ============================================================
@@ -909,4 +935,270 @@ CREATE TABLE IF NOT EXISTS invoice_acceptances (
   accepted_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_acc_invoice FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
   CONSTRAINT fk_acc_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ---------- Notifications (the bell) ----------
+-- One row per person per event. The app checks for new ones every ~30 seconds
+-- (no websockets needed). link = where clicking it goes, e.g. /customers/12
+CREATE TABLE IF NOT EXISTS notifications (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  user_id          BIGINT UNSIGNED NOT NULL,
+  type             VARCHAR(40) NOT NULL,
+  title            VARCHAR(200) NOT NULL,
+  body             VARCHAR(500) NULL,
+  link             VARCHAR(255) NULL,
+  actor_user_id    BIGINT UNSIGNED NULL,
+  read_at          DATETIME NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_notif_user (user_id, organization_id, read_at, id),
+  CONSTRAINT fk_notif_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- ANNOUNCEMENTS — a feed like Google Classroom: posts to a group, with comments
+-- audience_type / audience_id: who it's for (see utils/audience.js)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS announcements (
+  id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id     BIGINT UNSIGNED NOT NULL,
+  author_user_id      BIGINT UNSIGNED NOT NULL,
+  audience_type       ENUM('company','branch','department','team') NOT NULL DEFAULT 'company',
+  audience_id         BIGINT UNSIGNED NULL,
+  title               VARCHAR(200) NOT NULL,
+  body                TEXT NOT NULL,
+  is_pinned           TINYINT(1) NOT NULL DEFAULT 0,
+  needs_ack           TINYINT(1) NOT NULL DEFAULT 0,   -- staff tap "I've read this"
+  attachment_url      MEDIUMTEXT NULL,
+  attachment_name     VARCHAR(255) NULL,
+  attachment_public_id VARCHAR(255) NULL,
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_ann_org (organization_id, is_pinned, created_at),
+  CONSTRAINT fk_ann_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ann_author FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS announcement_comments (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  announcement_id  BIGINT UNSIGNED NOT NULL,
+  user_id          BIGINT UNSIGNED NOT NULL,
+  body             VARCHAR(2000) NOT NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_annc_post (announcement_id, created_at),
+  CONSTRAINT fk_annc_post FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE,
+  CONSTRAINT fk_annc_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Who has seen each post (and who tapped "I've read this")
+CREATE TABLE IF NOT EXISTS announcement_reads (
+  announcement_id  BIGINT UNSIGNED NOT NULL,
+  user_id          BIGINT UNSIGNED NOT NULL,
+  seen_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  acknowledged_at  DATETIME NULL,
+  PRIMARY KEY (announcement_id, user_id),
+  CONSTRAINT fk_annr_post FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE,
+  CONSTRAINT fk_annr_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- STAFF REQUESTS — salary advances & loans, repaid through payroll
+--   pending → approved (line manager) → paid_out (payroll paid the money) → repaid
+--   (or rejected / cancelled)
+-- Amounts in kobo. A loan's interest is flat: total = amount × (1 + rate).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS staff_requests (
+  id                      BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id         BIGINT UNSIGNED NOT NULL,
+  employee_id             BIGINT UNSIGNED NOT NULL,
+  type                    ENUM('advance','loan') NOT NULL,
+  amount_kobo             BIGINT NOT NULL,              -- what the employee receives
+  interest_rate_bp        INT UNSIGNED NOT NULL DEFAULT 0,  -- 500 = 5%
+  total_repayable_kobo    BIGINT NOT NULL,              -- amount + interest
+  months                  TINYINT UNSIGNED NOT NULL,    -- 1 for an advance, 12 for a loan
+  monthly_deduction_kobo  BIGINT NOT NULL,
+  repaid_kobo             BIGINT NOT NULL DEFAULT 0,
+  reason                  VARCHAR(1000) NULL,
+  status                  ENUM('pending','approved','rejected','cancelled','paid_out','repaid') NOT NULL DEFAULT 'pending',
+  decided_by              BIGINT UNSIGNED NULL,
+  decided_at              DATETIME NULL,
+  decision_note           VARCHAR(500) NULL,
+  paid_out_by             BIGINT UNSIGNED NULL,
+  paid_out_at             DATETIME NULL,
+  created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_req_org (organization_id, status),
+  KEY idx_req_emp (employee_id, status),
+  CONSTRAINT fk_req_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_req_emp FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- One row per request per paid payroll: the repayment taken from that month's salary.
+-- UNIQUE(request, run) means a payroll can never count a repayment twice.
+CREATE TABLE IF NOT EXISTS staff_request_repayments (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  request_id    BIGINT UNSIGNED NOT NULL,
+  run_id        BIGINT UNSIGNED NOT NULL,
+  amount_kobo   BIGINT NOT NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_repay_run (request_id, run_id),
+  CONSTRAINT fk_repay_req FOREIGN KEY (request_id) REFERENCES staff_requests(id) ON DELETE CASCADE,
+  CONSTRAINT fk_repay_run FOREIGN KEY (run_id) REFERENCES payroll_runs(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ---------- Staff feedback: about my job, complaints, suggestions ----------
+-- Anonymous feedback stores NO employee or user — the sender follows it with a
+-- private link (only a hash of its token is stored, like a password).
+CREATE TABLE IF NOT EXISTS staff_feedback (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  category         ENUM('job','complaint','suggestion') NOT NULL,
+  subject          VARCHAR(200) NOT NULL,
+  body             TEXT NOT NULL,
+  is_anonymous     TINYINT(1) NOT NULL DEFAULT 0,
+  employee_id      BIGINT UNSIGNED NULL,          -- NULL when anonymous
+  user_id          BIGINT UNSIGNED NULL,          -- NULL when anonymous
+  token_hash       CHAR(64) NULL,                 -- anonymous sender's private link
+  status           ENUM('received','in_review','resolved') NOT NULL DEFAULT 'received',
+  created_at       DATE NOT NULL,                 -- the day only (an exact time could identify the sender)
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_fb_org (organization_id, status),
+  UNIQUE KEY uq_fb_token (token_hash),
+  CONSTRAINT fk_fb_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS staff_feedback_replies (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  feedback_id   BIGINT UNSIGNED NOT NULL,
+  from_sender   TINYINT(1) NOT NULL DEFAULT 0,   -- 1 = the person who sent the feedback
+  user_id       BIGINT UNSIGNED NULL,            -- who replied (NULL for an anonymous sender)
+  body          TEXT NOT NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_fbr (feedback_id),
+  CONSTRAINT fk_fbr_fb FOREIGN KEY (feedback_id) REFERENCES staff_feedback(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- TEAM RESOURCES — materials for a group (SOPs, sales scripts, brochures, price lists)
+--   kind 'document' → written in Workard, editable (body = cleaned HTML)
+--   kind 'file'     → an uploaded PDF / Word / Excel / image; not editable here —
+--                     upload a new version instead
+-- Every edit / new upload keeps the old one in resource_versions.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS resources (
+  id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id   BIGINT UNSIGNED NOT NULL,
+  audience_type     ENUM('company','branch','department','team') NOT NULL DEFAULT 'team',
+  audience_id       BIGINT UNSIGNED NULL,
+  kind              ENUM('document','file') NOT NULL,
+  title             VARCHAR(200) NOT NULL,
+  description       VARCHAR(500) NULL,
+  body              MEDIUMTEXT NULL,                -- document
+  file_url          MEDIUMTEXT NULL,                -- file
+  file_name         VARCHAR(255) NULL,
+  file_type         VARCHAR(120) NULL,
+  file_size         INT UNSIGNED NULL,
+  file_public_id    VARCHAR(255) NULL,
+  version           INT UNSIGNED NOT NULL DEFAULT 1,
+  created_by        BIGINT UNSIGNED NOT NULL,
+  updated_by        BIGINT UNSIGNED NULL,
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_res_org (organization_id, audience_type, audience_id),
+  CONSTRAINT fk_res_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS resource_versions (
+  id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  resource_id     BIGINT UNSIGNED NOT NULL,
+  version         INT UNSIGNED NOT NULL,
+  title           VARCHAR(200) NOT NULL,
+  body            MEDIUMTEXT NULL,
+  file_url        MEDIUMTEXT NULL,
+  file_name       VARCHAR(255) NULL,
+  file_public_id  VARCHAR(255) NULL,
+  saved_by        BIGINT UNSIGNED NULL,
+  saved_at        DATETIME NOT NULL,
+  UNIQUE KEY uq_res_version (resource_id, version),
+  CONSTRAINT fk_resv_res FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- PROJECTS & SHARED TASKS
+-- A project belongs to a group (team / department / branch / company) and groups tasks.
+-- A task can have several people on it: tasks.assigned_employee_id is the LEAD,
+-- task_assignees lists everyone on it (the lead included).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS projects (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  name             VARCHAR(150) NOT NULL,
+  description      VARCHAR(1000) NULL,
+  audience_type    ENUM('company','branch','department','team') NOT NULL DEFAULT 'team',
+  audience_id      BIGINT UNSIGNED NULL,
+  color            CHAR(7) NOT NULL DEFAULT '#2a78d6',
+  status           ENUM('active','completed','archived') NOT NULL DEFAULT 'active',
+  due_date         DATE NULL,
+  created_by       BIGINT UNSIGNED NOT NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_proj_org (organization_id, status),
+  CONSTRAINT fk_proj_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS task_assignees (
+  task_id      BIGINT UNSIGNED NOT NULL,
+  employee_id  BIGINT UNSIGNED NOT NULL,
+  added_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (task_id, employee_id),
+  KEY idx_ta_emp (employee_id),
+  CONSTRAINT fk_ta_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ta_emp FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- MEETINGS (video by LiveKit) — for chosen people, a team, a department, a branch or everyone
+--   audience_type 'people' = only the people in meeting_invitees
+--   repeat: a daily stand-up is ONE meeting row that repeats (each day is an "occurrence")
+--   is_standup: the meeting room shows each person's tasks (done / doing / overdue)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS meetings (
+  id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id   BIGINT UNSIGNED NOT NULL,
+  title             VARCHAR(200) NOT NULL,
+  description       VARCHAR(1000) NULL,
+  audience_type     ENUM('people','company','branch','department','team') NOT NULL DEFAULT 'people',
+  audience_id       BIGINT UNSIGNED NULL,
+  project_id        BIGINT UNSIGNED NULL,
+  starts_at         DATETIME NOT NULL,          -- the first (or only) time
+  duration_minutes  SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+  repeat_rule       ENUM('none','daily','weekdays','weekly') NOT NULL DEFAULT 'none',
+  repeat_until      DATE NULL,
+  is_standup        TINYINT(1) NOT NULL DEFAULT 0,
+  created_by        BIGINT UNSIGNED NOT NULL,
+  cancelled_at      DATETIME NULL,
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_meet_org (organization_id, starts_at),
+  CONSTRAINT fk_meet_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Extra people invited (all of them, when audience_type = 'people')
+CREATE TABLE IF NOT EXISTS meeting_invitees (
+  meeting_id   BIGINT UNSIGNED NOT NULL,
+  employee_id  BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (meeting_id, employee_id),
+  KEY idx_mi_emp (employee_id),
+  CONSTRAINT fk_mi_meet FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE,
+  CONSTRAINT fk_mi_emp FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Who joined which day's meeting (first join only)
+CREATE TABLE IF NOT EXISTS meeting_attendance (
+  meeting_id       BIGINT UNSIGNED NOT NULL,
+  occurrence_date  DATE NOT NULL,
+  user_id          BIGINT UNSIGNED NOT NULL,
+  joined_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (meeting_id, occurrence_date, user_id),
+  CONSTRAINT fk_ma_meet FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;

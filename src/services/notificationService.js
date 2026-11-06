@@ -1,7 +1,42 @@
 import { pool } from '../config/db.js';
 import * as employeeModel from '../models/employeeModel.js';
+import * as notificationModel from '../models/notificationModel.js';
 import { sendEmail } from './emailService.js';
 import { scopeCondition } from '../utils/scope.js';
+
+// ============================================================
+// NOTIFICATIONS — the bell in the top bar (and the emails that go with some of them)
+//   notify(orgId, userIds, { type, title, body, link, actorUserId })
+// The person who caused it is never notified about their own action.
+// A failed notification never stops the action that caused it.
+// ============================================================
+export async function notify(orgId, userIds, { actorUserId, ...note }) {
+  try {
+    const recipients = userIds.filter((id) => id && Number(id) !== Number(actorUserId));
+    return await notificationModel.createMany(orgId, recipients, { ...note, actorUserId });
+  } catch (err) {
+    console.error('Notification failed:', err.message);
+    return 0;
+  }
+}
+
+// Same, addressed by employee id (e.g. "the person this task is assigned to")
+export async function notifyEmployees(orgId, employeeIds, note) {
+  return notify(orgId, await notificationModel.userIdsOfEmployees(orgId, employeeIds), note);
+}
+
+// ---------- What the bell shows ----------
+export async function listMine(auth) {
+  const [items, counts] = await Promise.all([
+    notificationModel.listForUser(auth.orgId, auth.userId),
+    notificationModel.countUnread(auth.orgId, auth.userId),
+  ]);
+  return { items, ...counts };
+}
+
+export const countMine = (auth) => notificationModel.countUnread(auth.orgId, auth.userId);
+export const markRead = (auth, id) => notificationModel.markRead(auth.orgId, auth.userId, id);
+export const markAllRead = (auth) => notificationModel.markAllRead(auth.orgId, auth.userId);
 
 // Everyone in the organisation whose `permissionKey` scope covers this employee
 // (e.g. the team supervisor, HR, the owner) — never the employee themselves.

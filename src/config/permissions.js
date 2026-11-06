@@ -64,6 +64,18 @@ export const PERMISSIONS = [
   // Onboarding — checklists for new joiners (every plan)
   { key: 'onboarding.manage', module: 'Onboarding', label: 'Set up onboarding checklists & onboard new joiners', scoped: false },
 
+  // Working together — scope decides WHICH GROUP you can post / share / schedule for:
+  //   all = the whole company (or any group), branch = your branch,
+  //   department = your department (and its teams), team = the teams you supervise
+  { key: 'announcements.post', module: 'Announcements', label: 'Post announcements & see who has read them', scoped: true },
+  { key: 'resources.manage', module: 'Team resources', label: 'Write & upload team materials (SOPs, scripts, brochures)', scoped: true },
+  { key: 'projects.manage', module: 'Projects', label: 'Create projects and add tasks to them', scoped: true },
+  { key: 'meetings.schedule', module: 'Meetings', label: 'Schedule meetings for a whole group (team, department…)', scoped: true },
+
+  // Staff requests — line managers ("Reports to") always approve their own reports' advances & loans
+  { key: 'requests.approve', module: 'Staff requests', label: 'Approve salary advances & loans (when there is no line manager)', scoped: true },
+  { key: 'feedback.manage', module: 'Staff requests', label: 'Read & reply to staff feedback, complaints and suggestions', scoped: false },
+
   { key: 'organization.manage', module: 'Settings', label: 'Manage branches, departments, teams & leave types', scoped: false },
   { key: 'roles.manage', module: 'Settings', label: 'Manage roles & assign roles', scoped: false },
   { key: 'audit.view', module: 'Settings', label: 'View activity log', scoped: false },
@@ -104,6 +116,11 @@ export const DEFAULT_ROLES = [
       'reviews.manage': 'all',
       'reviews.setup': 'all',
       'onboarding.manage': 'all',
+      'announcements.post': 'all',
+      'resources.manage': 'all',
+      'meetings.schedule': 'all',
+      'requests.approve': 'all',
+      'feedback.manage': 'all',
     },
   },
   {
@@ -122,6 +139,8 @@ export const DEFAULT_ROLES = [
       'finance.manage': 'all',
       'payroll.view': 'all',
       'payroll.approve': 'all',
+      'resources.manage': 'department',
+      'meetings.schedule': 'department',
     },
   },
   {
@@ -142,6 +161,10 @@ export const DEFAULT_ROLES = [
       'tasks.assign': 'all',
       'reviews.view': 'all',
       'reviews.manage': 'all',
+      'announcements.post': 'all',
+      'resources.manage': 'all',
+      'projects.manage': 'all',
+      'meetings.schedule': 'all',
     },
   },
   {
@@ -161,6 +184,10 @@ export const DEFAULT_ROLES = [
       'tasks.assign': 'team',
       'reviews.view': 'team',
       'reviews.manage': 'team',
+      'announcements.post': 'team',
+      'resources.manage': 'team',
+      'projects.manage': 'team',
+      'meetings.schedule': 'team',
     },
   },
   {

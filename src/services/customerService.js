@@ -1,3 +1,4 @@
+import { notify, notifyEmployees } from './notificationService.js';
 import * as salesModel from '../models/salesModel.js';
 import * as customerModel from '../models/customerModel.js';
 import * as interactionModel from '../models/interactionModel.js';
@@ -32,6 +33,39 @@ async function resolveAssignee(auth, requestedId) {
   return employee.id;
 }
 
+// ---------- Telling people (the bell) ----------
+const STAGE_NAMES = { lead: 'Lead', prospect: 'Prospect', customer: 'Customer', lost: 'Lost', inactive: 'Inactive' };
+const ACTIVITY_NAMES = { call: 'a call', meeting: 'a meeting', note: 'a note', email: 'an email', whatsapp: 'a WhatsApp chat', enquiry: 'an enquiry', complaint: 'a complaint' };
+
+// "Ada assigned you a lead: Zenith Foods" (not when you assign one to yourself)
+async function tellAssignee(auth, customer, employeeId) {
+  if (!employeeId || employeeId === auth.employee?.id) return;
+  await notifyEmployees(auth.orgId, [employeeId], {
+    type: 'customer.assigned',
+    title: `${auth.userName} assigned you ${customer.stage === 'customer' ? 'a customer' : `a ${STAGE_NAMES[customer.stage].toLowerCase()}`}: ${customer.name}`,
+    link: `/customers/${customer.id}`,
+    actorUserId: auth.userId,
+  });
+}
+
+// The person handling a customer did something → tell whoever assigned it to them
+async function tellAssigner(auth, customer, what) {
+  const assigner = customer.assigned_by || customer.created_by;
+  if (!assigner || assigner === auth.userId) return;
+  await notify(auth.orgId, [assigner], {
+    type: 'customer.updated',
+    title: `${auth.userName} ${what}`,
+    link: `/customers/${customer.id}`,
+    actorUserId: auth.userId,
+  });
+}
+
+// Leads / customers someone else gave me, and who (dashboard: "Assigned to you")
+export async function assignedToMe(auth) {
+  if (!auth.employee) return [];
+  return customerModel.listAssignedByOthers(auth.orgId, auth.employee.id, auth.userId);
+}
+
 // ---------- Customers ----------
 export async function listCustomers(auth, scope, query) {
   const page = query.page || 1;
@@ -59,25 +93,38 @@ export async function createCustomer(auth, data) {
   const requested = data.assignedEmployeeId || auth.employee?.id || null;
   const assignedEmployeeId = await resolveAssignee(auth, requested);
   const id = await customerModel.create(auth.orgId, { ...data, assignedEmployeeId, createdBy: auth.userId });
+  await customerModel.setAssignment(auth.orgId, id, assignedEmployeeId, auth.userId);
   await salesModel.recordChange({ orgId: auth.orgId, customerId: id, toStage: data.stage || 'lead', changedBy: auth.userId });
+  await tellAssignee(auth, { id, name: data.name, stage: data.stage || 'lead' }, assignedEmployeeId);
   await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'customer.created', entityType: 'customer', entityId: id, details: data.name });
   return customerModel.findById(auth.orgId, id);
 }
 
 export async function updateCustomer(auth, id, data) {
   const customer = await getCustomerOrFail(auth, 'customers.manage', id);
-  const { stage, ...changes } = data;
-
-  if (data.assignedEmployeeId !== undefined && data.assignedEmployeeId !== customer.assigned_employee_id) {
-    changes.assignedEmployeeId = await resolveAssignee(auth, data.assignedEmployeeId);
-  }
+  const { stage, assignedEmployeeId: requestedAssignee, ...changes } = data;
 
   await customerModel.update(auth.orgId, id, changes);
-  if (stage) await customerModel.setStage(auth.orgId, id, stage, auth.userId); // keeps the stage history
+
+  // A new person handles it → remember who gave it to them, and tell them
+  let reassigned = false;
+  if (requestedAssignee !== undefined && requestedAssignee !== customer.assigned_employee_id) {
+    const assignee = await resolveAssignee(auth, requestedAssignee);
+    if (assignee !== customer.assigned_employee_id) {
+      await customerModel.setAssignment(auth.orgId, id, assignee, auth.userId);
+      await tellAssignee(auth, { ...customer, stage: stage || customer.stage }, assignee);
+      reassigned = true;
+    }
+  }
+
+  // keeps the stage history, and tells whoever assigned it
+  if (stage && (await customerModel.setStage(auth.orgId, id, stage, auth.userId))) {
+    await tellAssigner(auth, customer, `moved ${customer.name} from ${STAGE_NAMES[customer.stage]} to ${STAGE_NAMES[stage]}`);
+  }
   await auditModel.log({
     orgId: auth.orgId,
     userId: auth.userId,
-    action: changes.assignedEmployeeId !== undefined ? 'customer.reassigned' : 'customer.updated',
+    action: reassigned ? 'customer.reassigned' : 'customer.updated',
     entityType: 'customer',
     entityId: id,
     details: customer.name,
@@ -106,6 +153,7 @@ export async function addActivity(auth, customerId, data) {
     employeeId,
     createdBy: auth.userId,
   });
+  await tellAssigner(auth, customer, `logged ${ACTIVITY_NAMES[data.type] || 'an update'} on ${customer.name}: ${data.subject}`);
   return interactionModel.findById(auth.orgId, id);
 }
 

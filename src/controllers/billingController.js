@@ -27,6 +27,26 @@ export const verify = asyncHandler(async (req, res) => {
 });
 
 // POST /api/webhooks/paystack-billing  (Paystack → Workard; raw body, signed)
+// POST /api/billing/change  { plan, interval }  (smaller plan / monthly ↔ yearly, from the next period)
+export const scheduleChange = asyncHandler(async (req, res) => {
+  res.json(await billingService.scheduleChange(req.auth, req.body));
+});
+
+// DELETE /api/billing/change
+export const cancelChange = asyncHandler(async (req, res) => {
+  res.json(await billingService.cancelScheduledChange(req.auth));
+});
+
+// POST /api/billing/auto-renew  { on }
+export const autoRenew = asyncHandler(async (req, res) => {
+  res.json(await billingService.setAutoRenew(req.auth, req.body));
+});
+
+// GET /api/billing/card-link  (Paystack page to change the card)
+export const cardLink = asyncHandler(async (req, res) => {
+  res.json(await billingService.cardLink(req.auth));
+});
+
 export const webhook = async (req, res) => {
   try {
     await billingService.handleWebhook(req.body, req.get('x-paystack-signature'));

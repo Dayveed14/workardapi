@@ -1,3 +1,4 @@
+import { deleteOldRead } from '../models/notificationModel.js';
 import { escalateUnansweredFlags } from './attendanceService.js';
 import { pool } from '../config/db.js';
 import * as taskModel from '../models/taskModel.js';
@@ -63,6 +64,8 @@ export async function runDailyJobs(now = new Date()) {
   result.recurringCreated = await generateRecurringTasks(today);
   // Flagged clock-ins nobody explained within 24 hours go to managers
   result.flagsEscalated = await escalateUnansweredFlags(now);
+  // Read notifications older than 90 days are cleared
+  result.notificationsCleared = await deleteOldRead(90);
 
   const weekday = now.getDay();
   const isWorkingDay = weekday !== 0 && weekday !== 6;
