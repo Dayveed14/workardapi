@@ -115,6 +115,11 @@ export const env = Object.freeze({
     apiSecret: str('LIVEKIT_API_SECRET'),
   }, // empty → plan payments show "not set up yet" (the API still starts)
 
+  // Workard super admin / blog: Vercel "deploy hook" URL. Publishing a blog post or changing
+  // prices calls it, so the website is rebuilt with the new content (prerendered for SEO).
+  // Empty = nothing is called (rebuild by redeploying on Vercel).
+  deployHookUrl: str('VERCEL_DEPLOY_HOOK_URL'),
+
   cloudinary: Object.freeze({
     cloudName: str('CLOUDINARY_CLOUD_NAME'),
     apiKey: str('CLOUDINARY_API_KEY'),

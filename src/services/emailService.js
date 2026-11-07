@@ -47,6 +47,7 @@ const PURPOSE_TEXT = {
   signup: { subject: 'Verify your Workard account', intro: 'Use this code to verify your email and finish creating your account.' },
   login: { subject: 'Your Workard login code', intro: 'Use this code to finish logging in.' },
   reset: { subject: 'Reset your Workard password', intro: 'Use this code to reset your password.' },
+  admin: { subject: 'Your Workard admin login code', intro: 'Use this code to finish logging in to the Workard admin area.' },
 };
 
 export function otpEmail(code, purpose) {
@@ -278,5 +279,77 @@ export function meetingInviteEmail({ firstName, organiser, title, when, link }) 
       <p style="margin:0 0 16px;color:#475569">${esc(when)}</p>
       <p>Join from your browser in Workard — no app to install.</p>
       ${button(link, 'Open the meeting')}`),
+  };
+}
+
+// ---------- Workard platform (super admin) ----------
+export function adminInviteEmail({ firstName, invitedBy, link }) {
+  return {
+    subject: 'You’re now a Workard super admin',
+    text: `Hi ${firstName}, ${invitedBy} added you as a Workard super admin. Set your password (link works for 3 days): ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p><strong>${esc(invitedBy)}</strong> added you as a <strong>Workard super admin</strong>.</p>
+      <p><a href="${esc(link)}" style="display:inline-block;background:#2563eb;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Set your password</a></p>
+      <p style="color:#64748b">The link works for 3 days. Each login also asks for a code sent to this email.</p>`),
+  };
+}
+
+export function companySuspendedEmail({ firstName, organizationName, reason }) {
+  return {
+    subject: `${organizationName} has been suspended on Workard`,
+    text: `Hi ${firstName}, ${organizationName}'s Workard account has been suspended. Reason: ${reason}. Reply to this email or write to hello@workard.com to sort it out.`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p><strong>${esc(organizationName)}</strong>’s Workard account has been suspended, so nobody in the company can use it for now.</p>
+      <p style="background:#fef2f2;border-radius:8px;padding:12px 16px"><strong>Reason:</strong> ${esc(reason)}</p>
+      <p>Write to <a href="mailto:hello@workard.com">hello@workard.com</a> and we’ll help sort it out. Your data is kept safe.</p>`),
+  };
+}
+
+export function companyRestoredEmail({ firstName, organizationName, link }) {
+  return {
+    subject: `${organizationName} is back on Workard`,
+    text: `Hi ${firstName}, ${organizationName}'s Workard account is active again: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p>Good news — <strong>${esc(organizationName)}</strong>’s Workard account is active again. Everyone can log in as before.</p>
+      <p><a href="${esc(link)}">Open Workard</a></p>`),
+  };
+}
+
+export function platformAnnouncementEmail({ firstName, title, body, link }) {
+  return {
+    subject: title,
+    text: `Hi ${firstName}, ${body} — ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <h2 style="font-size:18px;margin:0 0 12px">${esc(title)}</h2>
+      <p style="white-space:pre-line">${esc(body)}</p>
+      <p style="color:#64748b">— The Workard team</p>`),
+  };
+}
+
+export function demoRequestEmail({ name, email, phone, company, size, message, link }) {
+  return {
+    subject: `New demo request: ${company || name}`,
+    text: `${name} (${email}${phone ? `, ${phone}` : ''}) from ${company || '—'} (${size || '—'} staff) asked for a demo. ${message || ''} ${link}`,
+    html: layout(`
+      <p><strong>${esc(name)}</strong> asked for a demo.</p>
+      <p>${esc(email)}${phone ? ` · ${esc(phone)}` : ''}<br/>${esc(company || '—')} · ${esc(size || '—')} staff</p>
+      ${message ? `<p style="background:#f8fafc;border-radius:8px;padding:12px 16px;white-space:pre-line">${esc(message)}</p>` : ''}
+      <p><a href="${esc(link)}">Open demo requests</a></p>`),
+  };
+}
+
+export function passwordResetNudgeEmail({ firstName, link }) {
+  return {
+    subject: 'Reset your Workard password',
+    text: `Hi ${firstName}, Workard support sent you this link to reset your password: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p>Workard support sent you this link to reset your password. You’ll get a 6-digit code by email to confirm it’s you.</p>
+      <p><a href="${esc(link)}" style="display:inline-block;background:#2563eb;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">Reset my password</a></p>
+      <p style="color:#64748b">Didn’t ask for this? You can ignore it — nothing changes until you choose a new password.</p>`),
   };
 }

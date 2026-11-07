@@ -48,4 +48,18 @@ export async function runUpgrades(conn) {
   if (hasAssignees.length) {
     await conn.query('INSERT IGNORE INTO task_assignees (task_id, employee_id) SELECT id, assigned_employee_id FROM tasks');
   }
+
+  // Meetings: repeat on chosen weekdays (each with its own time), every N weeks, or monthly
+  const [hasMeetings] = await conn.query("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'meetings'");
+  if (hasMeetings.length) {
+    await conn.query("ALTER TABLE meetings MODIFY repeat_rule ENUM('none','daily','weekdays','weekly','monthly') NOT NULL DEFAULT 'none'");
+    await addColumn(conn, 'meetings', 'repeat_every', 'TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER repeat_rule');
+    await addColumn(conn, 'meetings', 'repeat_days', 'VARCHAR(200) NULL AFTER repeat_every');
+  }
+
+  // Super admin: lock users, suspend companies, admin log-in codes
+  await addColumn(conn, 'users', 'locked_at', 'DATETIME NULL AFTER last_login_at');
+  await addColumn(conn, 'organizations', 'suspended_at', 'DATETIME NULL');
+  await addColumn(conn, 'organizations', 'suspended_reason', 'VARCHAR(255) NULL');
+  await conn.query("ALTER TABLE otp_codes MODIFY purpose ENUM('signup','login','reset','admin') NOT NULL");
 }

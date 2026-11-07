@@ -26,12 +26,18 @@ import staffRequestRoutes from './staffRequestRoutes.js';
 import resourceRoutes from './resourceRoutes.js';
 import projectRoutes from './projectRoutes.js';
 import meetingRoutes from './meetingRoutes.js';
+import adminRoutes from './adminRoutes.js';
+import siteRoutes from './siteRoutes.js';
+import supportRoutes from './supportRoutes.js';
 
 // Every API route, in one place. All of these sit under /api
 const router = Router();
 
 router.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+router.use('/admin', adminRoutes); //          Workard super admins (own log-in) — see adminRoutes.js
+router.use('/site', siteRoutes); //            the website: prices, blog, demo requests (no login)
+router.use('/support-access', supportRoutes); // owner lets Workard support look around (read-only)
 router.use('/auth', authRoutes); //            sign up, log in, 2FA codes, password reset
 router.use('/invites', inviteRoutes); //       accept an invitation (public)
 router.use('/me', meRoutes); //                clock in/out, my leave (self-service)

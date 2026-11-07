@@ -15,10 +15,11 @@ const SELECT = `
 export async function create(orgId, d, db = pool) {
   const [result] = await db.query(
     `INSERT INTO meetings
-       (organization_id, title, description, audience_type, audience_id, project_id, starts_at, duration_minutes, repeat_rule, repeat_until, is_standup, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (organization_id, title, description, audience_type, audience_id, project_id, starts_at, duration_minutes,
+        repeat_rule, repeat_every, repeat_days, repeat_until, is_standup, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [orgId, d.title, d.description || null, d.audienceType, d.audienceId || null, d.projectId || null, d.startsAt, d.durationMinutes,
-      d.repeat, d.repeatUntil || null, d.isStandup ? 1 : 0, d.createdBy]
+      d.repeat, d.repeatEvery || 1, d.repeatDays || null, d.repeatUntil || null, d.isStandup ? 1 : 0, d.createdBy]
   );
   return result.insertId;
 }
@@ -40,6 +41,24 @@ export async function listVisible(orgId, visible, { from, to }, db = pool) {
     [orgId, ...visible.params, to, from, from]
   );
   return rows;
+}
+
+// Adds skipped_dates (single dates the organiser cancelled) to each meeting
+export async function withSkips(meetings, db = pool) {
+  if (!meetings.length) return meetings;
+  const [rows] = await db.query(
+    'SELECT meeting_id, skip_date FROM meeting_skips WHERE meeting_id IN (?) ORDER BY skip_date',
+    [meetings.map((m) => m.id)]
+  );
+  return meetings.map((m) => ({ ...m, skipped_dates: rows.filter((r) => r.meeting_id === m.id).map((r) => String(r.skip_date).slice(0, 10)) }));
+}
+
+export async function addSkip(meetingId, date, db = pool) {
+  await db.query('INSERT IGNORE INTO meeting_skips (meeting_id, skip_date) VALUES (?, ?)', [meetingId, date]);
+}
+
+export async function removeSkip(meetingId, date, db = pool) {
+  await db.query('DELETE FROM meeting_skips WHERE meeting_id = ? AND skip_date = ?', [meetingId, date]);
 }
 
 export async function update(orgId, id, fields, db = pool) {

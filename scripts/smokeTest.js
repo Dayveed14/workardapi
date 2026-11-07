@@ -814,6 +814,34 @@ try {
   r = await sup('GET', `/requests/${loanId}`);
   check('the line manager can open it', r.status === 200);
 
+  // Each company sets its own loan & advance rules (Settings → Loans & advances)
+  r = await staff('GET', '/requests/settings');
+  check('every company starts on the defaults: 100% of yearly basic, 12 months, 5%', r.data.isDefault && r.data.loanMaxPercent === 100 && r.data.loanMonths === 12 && r.data.loanInterestBp === 500 && r.data.advanceMaxPercent === 100, r.data);
+  const newRules = { loansEnabled: true, loanMaxPercent: 50, loanMaxNaira: 1_500_000, loanMonths: 6, loanInterestPercent: 2.5, advancesEnabled: true, advanceMaxPercent: 50, advanceMonths: 2, advanceInterestPercent: 0 };
+  r = await staff('PUT', '/requests/settings', newRules);
+  check('employees can’t change the rules', r.status === 403);
+  r = await hr('PUT', '/requests/settings', { ...newRules, loanMonths: 0, loanInterestPercent: -1 });
+  check('bad months / interest are refused', r.status === 422 && r.data.errors?.loanMonths && r.data.errors?.loanInterestPercent, r.data.errors);
+  r = await hr('PUT', '/requests/settings', newRules);
+  check('the payroll team sets: 50% of yearly basic, max ₦1.5m, 6 months, 2.5%', r.status === 200 && !r.data.isDefault && r.data.loanMaxKobo === 150_000_000 && r.data.loanInterestBp === 250, r.data);
+  r = await staff('GET', '/requests/limits');
+  // 50% of ₦3.6m = ₦1.8m, but the ceiling is ₦1.5m; minus the ₦1.2m loan already open = ₦300,000
+  check('limits follow the company’s rules (ceiling, open loans)', r.data.loan.maxKobo === 30_000_000 && r.data.loan.months === 6 && r.data.advance.maxKobo === 15_000_000 && r.data.advance.months === 2, r.data);
+  r = await staff('POST', '/requests', { type: 'loan', amount: 300_001, reason: 'Too much' });
+  check('…and are enforced', r.status === 422, r.data);
+  r = await staff('POST', '/requests', { type: 'loan', amount: 200_000, reason: 'Car repair' });
+  check('a new loan uses the new terms (6 months, 2.5%: ₦205,000)', r.status === 201 && r.data.months === 6 && r.data.interest_rate_bp === 250 && r.data.total_repayable_kobo === 20_500_000, r.data);
+  await staff('POST', `/requests/${r.data.id}/cancel`);
+  r = await staff('GET', `/requests/${loanId}`);
+  check('loans already taken keep their old terms', r.data.months === 12 && r.data.interest_rate_bp === 500, r.data);
+  r = await hr('PUT', '/requests/settings', { ...newRules, loansEnabled: false });
+  r = await staff('POST', '/requests', { type: 'loan', amount: 10_000, reason: 'School fees' });
+  check('a company can switch staff loans off', r.status === 403 && /doesn’t offer staff loans/.test(r.data.message), r.data);
+  r = await hr('DELETE', '/requests/settings');
+  check('back to the defaults', r.data.isDefault && r.data.loanMonths === 12 && r.data.loansEnabled, r.data);
+  r = await hr('GET', '/organization/audit-logs');
+  check('rule changes are in the activity log', r.status !== 200 || r.data.some((l) => l.action === 'requests.settings_updated'), r.data?.slice?.(0, 2));
+
   console.log('\nFeedback, complaints & suggestions');
   r = await staff('POST', '/requests/feedback', { category: 'suggestion', subject: 'Water dispenser', body: 'Could we get a water dispenser on the 2nd floor?', isAnonymous: false });
   check('send a named suggestion', r.status === 201 && r.data.sender_name === 'Chidi Eze' && r.data.privateLink === null, r.data);
@@ -1370,6 +1398,11 @@ try {
   r = await sup('GET', `/tasks/${sharedTask}`);
   check('deleting a project keeps its tasks', r.status === 200 && r.data.project_id === null, r.data);
 
+  r = await owner('GET', '/attendance');
+  check('the register includes staff IDs (for search)', r.status === 200 && r.data.register.every((x) => 'staff_id' in x), r.data.register?.[0]);
+  r = await owner('GET', `/attendance/monthly?month=${thisMonth}`);
+  check('the monthly breakdown includes staff IDs', r.status === 200 && r.data.people.every((x) => 'staffId' in x));
+
   console.log('\nTeam performance (CEO view)');
   const ownerEmployeeId = (await owner('GET', '/auth/me')).data.employee?.id;
   r = await owner('GET', `/performance?month=${thisMonth}`);
@@ -1434,6 +1467,34 @@ try {
   r = await staff('POST', `/meetings/${standupId}/join?date=${todayIso}`);
   check('a cancelled meeting can’t be joined', r.status === 404 || r.status === 409, r.data);
 
+  // Flexible repeats: Wednesdays 10:00 and Fridays 14:30
+  const nextDow = (dow) => { let d = addDaysIso(todayIso, 1); while (new Date(`${d}T12:00:00Z`).getUTCDay() !== dow) d = addDaysIso(d, 1); return d; };
+  const wed = nextDow(3);
+  r = await staff('POST', '/meetings', { title: 'Wed & Fri sync', audienceType: 'people', inviteeIds: [supId], date: wed, time: '10:00', repeat: 'weekly', repeatDays: [{ day: 3, time: '10:00' }, { day: 5, time: '14:30' }] });
+  const syncId = r.data.id;
+  check('weekly on chosen days, each with its own time', r.status === 201 && r.data.repeatText === 'Every Wednesday 10:00 and Friday 14:30' && r.data.upcoming[0].date === wed && r.data.upcoming[0].time === '10:00' && r.data.upcoming[1].date === addDaysIso(wed, 2) && r.data.upcoming[1].time === '14:30', r.data.upcoming);
+  r = await staff('GET', `/meetings?from=${wed}&to=${addDaysIso(wed, 13)}`);
+  const syncDates = r.data.filter((m) => m.meetingId === syncId).map((m) => m.startsAt);
+  check('the calendar shows each day at its own time', syncDates.join() === [`${wed} 10:00`, `${addDaysIso(wed, 2)} 14:30`, `${addDaysIso(wed, 7)} 10:00`, `${addDaysIso(wed, 9)} 14:30`].join(), syncDates);
+  r = await staff('PATCH', `/meetings/${syncId}`, { repeatEvery: 2 });
+  check('every 2 weeks skips the week in between', r.data.repeatText.startsWith('Every 2 weeks on') && r.data.upcoming[2].date === addDaysIso(wed, 14), r.data.upcoming);
+  r = await staff('POST', `/meetings/${syncId}/skip`, { date: addDaysIso(wed, 2) });
+  check('cancel just one date: it disappears, the rest stay', r.status === 200 && !r.data.upcoming.some((u) => u.date === addDaysIso(wed, 2)) && r.data.upcoming[0].date === wed && r.data.skippedDates.includes(addDaysIso(wed, 2)), r.data);
+  r = await sup('GET', '/notifications');
+  check('…and the people invited are told', r.data.items.some((n) => n.type === 'meeting.cancelled' && /is off/.test(n.title)), r.data.items.map((n) => n.title));
+  r = await staff('POST', `/meetings/${syncId}/join?date=${addDaysIso(wed, 2)}`);
+  check('a cancelled date can’t be joined', r.status === 409, r.data);
+  r = await staff('DELETE', `/meetings/${syncId}/skip?date=${addDaysIso(wed, 2)}`);
+  check('…and it can be brought back', r.data.upcoming.some((u) => u.date === addDaysIso(wed, 2)), r.data.upcoming);
+  r = await sup('POST', `/meetings/${syncId}/skip`, { date: wed });
+  check('only the organiser can cancel a date', r.status === 403);
+  r = await staff('POST', '/meetings', { title: 'No days', audienceType: 'people', inviteeIds: [supId], date: wed, time: '10:00', repeat: 'weekly', repeatDays: [] });
+  check('weekly needs at least one day', r.status === 422 && r.data.errors?.repeatDays, r.data);
+  r = await staff('POST', '/meetings', { title: 'Month end', audienceType: 'people', inviteeIds: [supId], date: '2027-01-31', time: '16:00', repeat: 'monthly' });
+  check('monthly on the 31st falls on the last day of shorter months', r.data.repeatText === 'Monthly on the 31st' && r.data.upcoming.slice(0, 3).map((u) => u.date).join() === '2027-01-31,2027-02-28,2027-03-31', r.data.upcoming);
+  r = await staff('POST', '/meetings', { title: 'Every other day', audienceType: 'people', inviteeIds: [supId], date: wed, time: '08:00', repeat: 'daily', repeatEvery: 2, repeatUntil: addDaysIso(wed, 6) });
+  check('every 2 days, until a date', r.data.upcoming.map((u) => u.date).join() === [wed, addDaysIso(wed, 2), addDaysIso(wed, 4), addDaysIso(wed, 6)].join(), r.data.upcoming);
+
   console.log('\nDashboard & roles');
   r = await owner('GET', '/dashboard');
   check('owner dashboard counts all 6 employees', r.data.headcount === 6, r.data); // incl. HR & finance added for payroll
@@ -1454,6 +1515,187 @@ try {
   check('exit employee', r.status === 200 && r.data.status === 'exited', r.data);
   r = await staff('GET', '/auth/me');
   check('exited employee loses access', r.status === 401, r.data);
+
+
+  console.log('\nWorkard super admin');
+  const { addAdmin } = await import('../src/services/adminAuthService.js');
+  const adminEmail = `admin${stamp}@workard.test`;
+  const made = await addAdmin({ userId: null, userName: 'Workard setup' }, { email: adminEmail, fullName: 'Tobi Admin' });
+  const setupToken = made.setupLink?.split('/admin/setup/')[1];
+  check('the first admin gets a set-your-password link (emailed too)', setupToken && lastEmail(adminEmail)?.text.includes(setupToken), made);
+  const admin = client();
+  r = await admin('GET', `/admin/auth/setup/${setupToken}`);
+  check('the setup link shows who it’s for', r.status === 200 && r.data.email === adminEmail, r.data);
+  r = await admin('POST', `/admin/auth/setup/${setupToken}`, { password: 'adminpass123' });
+  check('set the password', r.status === 200, r.data);
+  r = await admin('POST', `/admin/auth/setup/${setupToken}`, { password: 'again12345' });
+  check('…and the link only works once', r.status === 404);
+
+  r = await anon('POST', '/admin/auth/login', { email: freeEmail, password: 'secret123' });
+  check('a company owner can’t log in to the admin area', r.status === 401, r.data);
+  r = await admin('POST', '/admin/auth/login', { email: adminEmail, password: 'wrong-pass' });
+  check('wrong admin password is refused', r.status === 401);
+  r = await admin('POST', '/admin/auth/login', { email: adminEmail, password: 'adminpass123' });
+  check('admin log-in asks for an emailed code', r.data.requiresOtp && r.data.purpose === 'admin', r.data);
+  r = await admin('POST', '/admin/auth/verify', { challengeToken: r.data.challengeToken, code: codeFor(adminEmail) });
+  check('code → admin session', r.status === 200 && r.data.admin.email === adminEmail, r.data);
+  r = await freeCo('GET', '/admin/overview');
+  check('a company session can’t open the admin API', r.status === 401);
+
+  r = await admin('GET', '/admin/overview');
+  check('overview: companies, statuses, sign-ups, revenue', r.status === 200 && r.data.totals.companies >= 3 && r.data.byStatus && Array.isArray(r.data.signupsByWeek) && 'monthlyRevenueKobo' in r.data, r.data.totals);
+
+  r = await admin('GET', `/admin/companies?search=${encodeURIComponent(freeEmail)}`);
+  const freeCoRow = r.data.companies?.[0];
+  check('find a company by its owner’s email', r.data.total === 1 && freeCoRow.name === 'Free Co' && freeCoRow.status === 'trial', r.data);
+  const freeOrgId = freeCoRow.id;
+  r = await admin('GET', `/admin/companies/${freeOrgId}`);
+  check('company page: owner, plan, usage counts — not their records', r.status === 200 && r.data.owner.email === freeEmail && typeof r.data.usage.customers === 'number' && !('employeesList' in r.data), r.data.usage);
+  r = await admin('GET', '/admin/companies?status=trial');
+  check('filter companies by status', r.data.companies.every((c) => c.status === 'trial') && r.data.counts.trial >= 1, r.data.counts);
+
+  const trialEndBefore = freeCoRow.periodEnd;
+  r = await admin('POST', `/admin/companies/${freeOrgId}/extend-trial`, { days: 10 });
+  check('extend a trial', r.status === 200 && r.data.periodEnd === addDaysIso(trialEndBefore, 10) && r.data.status === 'trial', r.data);
+  r = await freeCo('GET', '/organization/audit-logs');
+  check('…and the company sees it in its activity log', r.data.some((l) => l.action === 'workard.trial_extended'), r.data.slice(0, 3));
+  r = await admin('POST', `/admin/companies/${freeOrgId}/plan`, { plan: 'business', interval: 'monthly', periodEnd: addDaysIso(todayIso, 60) });
+  check('give a plan without payment (free months)', r.data.status === 'active' && r.data.plan === 'business' && r.data.periodEnd === addDaysIso(todayIso, 60), r.data);
+  r = await freeCo('GET', '/auth/me');
+  check('…the company is on it straight away', r.data.subscription.plan === 'business' && r.data.subscription.status === 'active', r.data.subscription);
+  r = await admin('POST', `/admin/companies/${freeOrgId}/exempt`, { exempt: true });
+  check('exempt a company from billing', r.data.status === 'exempt');
+  r = await admin('POST', `/admin/companies/${freeOrgId}/exempt`, { exempt: false });
+
+  r = await admin('POST', `/admin/companies/${freeOrgId}/suspend`, { reason: 'x' });
+  check('suspending needs a reason', r.status === 422);
+  r = await admin('POST', `/admin/companies/${freeOrgId}/suspend`, { reason: 'Payment dispute — call us' });
+  check('suspend a company (the owner is emailed why)', r.data.status === 'suspended' && /suspended/.test(lastEmail(freeEmail)?.subject), lastEmail(freeEmail)?.subject);
+  r = await freeCo('GET', '/employees');
+  check('…nobody in it can use Workard', r.status === 423 && r.data.code === 'ORGANIZATION_SUSPENDED' && /Payment dispute/.test(r.data.message), r.data);
+  r = await admin('POST', `/admin/companies/${freeOrgId}/restore`);
+  check('lift the suspension', r.data.status !== 'suspended' && (await freeCo('GET', '/employees')).status === 200 && /back on Workard/.test(lastEmail(freeEmail)?.subject));
+
+  r = await admin('GET', `/admin/users?search=${encodeURIComponent(freeEmail)}`);
+  const freeUser = r.data[0];
+  check('find a user and the companies they’re in', freeUser?.email === freeEmail && freeUser.memberships[0].orgName === 'Free Co', r.data);
+  r = await admin('POST', `/admin/users/${freeUser.id}/lock`, { locked: true });
+  check('lock a user: logged out at once', r.status === 200 && (await freeCo('GET', '/auth/me')).status === 401);
+  r = await anon('POST', '/auth/login', { email: freeEmail, password: 'secret123' });
+  check('…and they can’t log in', r.status === 403 && /locked/.test(r.data.message), r.data);
+  await admin('POST', `/admin/users/${freeUser.id}/lock`, { locked: false });
+  r = await freeCo('POST', '/auth/login', { email: freeEmail, password: 'secret123' });
+  r = await freeCo('POST', '/auth/verify-otp', { challengeToken: r.data.challengeToken, code: codeFor(freeEmail) });
+  check('unlocked: they can log in again', r.status === 200, r.data);
+  r = await admin('POST', `/admin/users/${freeUser.id}/reset`);
+  check('email someone a password-reset link', r.status === 200 && lastEmail(freeEmail)?.text.includes('/forgot-password?email='), lastEmail(freeEmail)?.text);
+
+  // Support access: only when the OWNER opens it, read-only
+  r = await admin('POST', `/admin/companies/${freeOrgId}/support`);
+  check('support can’t look inside a company without the owner’s OK', r.status === 403, r.data);
+  r = await staff('POST', '/support-access', { hours: 1 });
+  check('only the owner can let support in', r.status === 403 || r.status === 401);
+  r = await freeCo('POST', '/support-access', { hours: 5 });
+  check('only 1, 4, 24 or 72 hours', r.status === 422);
+  r = await freeCo('POST', '/support-access', { hours: 1, reason: 'Payroll question' });
+  check('owner opens support access for an hour', r.status === 200 && r.data.active, r.data);
+  r = await admin('GET', `/admin/companies/${freeOrgId}`);
+  check('…the admin sees it’s open', r.data.supportAccess?.reason === 'Payroll question', r.data.supportAccess);
+  const supportVisit = client();
+  r = await supportVisit('POST', '/admin/auth/login', { email: adminEmail, password: 'adminpass123' });
+  await new Promise((done) => setTimeout(done, 10));
+  r = await supportVisit('POST', '/admin/auth/verify', { challengeToken: r.data.challengeToken, code: codeFor(adminEmail) });
+  r = await supportVisit('POST', `/admin/companies/${freeOrgId}/support`);
+  check('admin opens the company (read-only)', r.status === 200 && r.data.endsAt, r.data);
+  r = await supportVisit('GET', '/auth/me');
+  check('…sees the company as “Workard support”', r.status === 200 && r.data.organization.id === freeOrgId && r.data.support && /support/i.test(r.data.role.name), r.data);
+  r = await supportVisit('GET', '/employees');
+  check('…can read', r.status === 200);
+  r = await supportVisit('POST', '/organization/branches', { name: 'Sneaky branch' });
+  check('…but can’t change anything', r.status === 403 && /read-only/.test(r.data.message), r.data);
+  r = await freeCo('GET', '/notifications');
+  check('the owner is told support is looking', r.data.items.some((n) => n.type === 'support.opened'), r.data.items.map((n) => n.type));
+  r = await freeCo('GET', '/support-access');
+  check('…and sees each visit', r.data.visits.length === 1, r.data.visits);
+  await freeCo('DELETE', '/support-access');
+  r = await supportVisit('GET', '/employees');
+  check('closing access ends the visit at once', r.status === 401);
+
+  // Prices & trial length (no deploy)
+  r = await admin('GET', '/admin/pricing');
+  const defaults = r.data;
+  const newPrices = Object.fromEntries(defaults.plans.map((p) => [p.id, { ...p.prices }]));
+  newPrices.starter.monthly = 1_800_000;
+  newPrices.starter.yearly = 18_000_000;
+  r = await admin('PUT', '/admin/pricing', { prices: { ...newPrices, business: { monthly: 100_000, yearly: 9_000_000 } }, trialDays: 14 });
+  check('a yearly price above 12 months is refused', r.status === 422, r.data);
+  r = await admin('PUT', '/admin/pricing', { prices: newPrices, trialDays: 21 });
+  check('change prices and trial length', r.status === 200 && r.data.plans[0].prices.monthly === 1_800_000 && r.data.trialDays === 21, r.data);
+  r = await anon('GET', '/site/plans');
+  check('…the website shows the new price at once', r.data.plans.find((p) => p.id === 'starter').prices.monthly === 1_800_000 && r.data.trialDays === 21, r.data);
+  r = await freeCo('GET', '/billing');
+  check('…and new payments use it', r.data.plans.find((p) => p.id === 'starter').prices.monthly === 1_800_000, r.data.plans?.[0]);
+  r = await admin('DELETE', '/admin/pricing');
+  check('reset to the defaults', r.data.plans[0].prices.monthly === defaults.plans[0].defaults.monthly && r.data.trialDays === defaults.defaultTrialDays, r.data);
+
+  // Announcements to owners, demo requests
+  r = await admin('POST', '/admin/announcements', { title: 'Maintenance on Saturday', body: 'Workard will be down for 30 minutes at 10pm.', audience: 'all', sendEmail: true });
+  check('announce to every company owner', r.status === 201 && r.data.sentTo >= 3, r.data);
+  r = await freeCo('GET', '/notifications');
+  check('…owners get it in the bell (and by email)', r.data.items.some((n) => n.type === 'workard.announcement') && lastEmail(freeEmail)?.subject === 'Maintenance on Saturday');
+  r = await anon('POST', '/site/demo-requests', { fullName: 'Kemi Adeyemi', email: `kemi${stamp}@test.ng`, company: 'Kemi Foods', companySize: '11-50', message: 'We have 3 branches' });
+  check('anyone can ask for a demo on the website', r.status === 201, r.data);
+  check('…super admins are emailed', /demo request/i.test(lastEmail(adminEmail)?.subject || ''), lastEmail(adminEmail)?.subject);
+  r = await anon('POST', '/site/demo-requests', { fullName: 'Bot', email: `bot${stamp}@test.ng`, website: 'spam.com' });
+  check('bots filling the hidden field are ignored', r.status === 422 || r.status === 201);
+  r = await admin('GET', '/admin/demos');
+  const demo = r.data.find((d) => d.email === `kemi${stamp}@test.ng`);
+  check('demo requests inbox', demo?.status === 'new' && !r.data.some((d) => d.email === `bot${stamp}@test.ng`), r.data.map((d) => d.email));
+  r = await admin('PATCH', `/admin/demos/${demo.id}`, { status: 'contacted', note: 'Called — demo Tuesday' });
+  check('mark a request contacted, with a note', r.data.status === 'contacted' && r.data.note === 'Called — demo Tuesday');
+
+  // More super admins — all the same rights
+  r = await admin('POST', '/admin/admins', { fullName: 'Chidi Eze', email: staffEmail });
+  check('an existing user can be made a super admin (keeps their password)', r.status === 201 && r.data.setupLink === null, r.data);
+  r = await admin('GET', '/admin/admins');
+  check('list of super admins', r.data.length >= 2 && r.data.some((a) => a.email === staffEmail));
+  r = await admin('DELETE', `/admin/admins/${made.userId}`);
+  check('you can’t remove yourself', r.status === 409);
+  const chidiAdminId = (await admin('GET', '/admin/admins')).data.find((a) => a.email === staffEmail).user_id;
+  r = await admin('DELETE', `/admin/admins/${chidiAdminId}`);
+  check('remove a super admin', r.status === 204);
+  r = await admin('GET', '/admin/log');
+  check('every admin action is logged', ['company.suspended', 'company.trial_extended', 'user.locked', 'pricing.updated', 'support.opened', 'admin.added'].every((a) => r.data.rows.some((l) => l.action === a)), r.data.rows.map((l) => l.action));
+
+  // Blog
+  const postTitle = `How to run payroll in Nigeria ${stamp}`;
+  const postSlug = `how-to-run-payroll-in-nigeria-${stamp}`;
+  r = await admin('POST', '/admin/blog', { title: postTitle, bodyHtml: '<h2>PAYE</h2><p>Hello <script>alert(1)</script><img src="https://example.com/a.png" onerror="x()"></p>', category: 'Payroll', status: 'draft' });
+  const postId = r.data.id;
+  check('write a draft post (HTML is cleaned)', r.status === 201 && r.data.slug === postSlug && r.data.excerpt.startsWith('PAYE Hello') && !/script|onerror/.test(r.data.body_html) && /<img src="https:\/\/example.com\/a.png"/.test(r.data.body_html) && r.data.excerpt, r.data);
+  r = await admin('PATCH', `/admin/blog/${postId}`, { bodyHtml: '<div>Line one</div><div>Line two</div>' });
+  check('lines typed in the editor stay separate paragraphs', r.data.body_html === '<p>Line one</p><p>Line two</p>', r.data.body_html);
+  r = await anon('GET', '/site/blog');
+  check('drafts aren’t on the website', !r.data.posts.some((p) => p.id === postId));
+  r = await admin('PATCH', `/admin/blog/${postId}`, { status: 'published' });
+  check('publish', r.data.status === 'published' && r.data.live === true, r.data);
+  r = await anon('GET', '/site/blog');
+  check('…it’s on the website, with categories', r.data.posts.some((p) => p.id === postId) && r.data.categories.some((c) => c.name === 'Payroll'), r.data);
+  r = await anon('GET', `/site/blog/${postSlug}`);
+  check('read a post by its address', r.status === 200 && r.data.post.title === postTitle && r.data.post.readingMinutes >= 1, r.data);
+  r = await admin('POST', '/admin/blog', { title: postTitle, bodyHtml: '<p>Part two</p>', status: 'published', publishedAt: new Date(Date.now() + 86400_000).toISOString() });
+  const scheduledId = r.data.id;
+  check('same title gets its own address; a future date schedules it', r.data.slug === `${postSlug}-2` && r.data.live === false, r.data);
+  r = await anon('GET', `/site/blog/${postSlug}-2`);
+  check('…scheduled posts aren’t visible yet', r.status === 404);
+  r = await anon('GET', '/site/build');
+  check('the website build gets every live post + prices', r.data.posts.some((p) => p.post.id === postId) && !r.data.posts.some((p) => p.post.id === scheduledId) && r.data.plans.length === 3);
+  r = await admin('DELETE', `/admin/blog/${scheduledId}`);
+  check('delete a post', r.status === 204);
+  await admin('DELETE', `/admin/blog/${postId}`);
+  r = await admin('POST', '/admin/auth/logout');
+  r = await admin('GET', '/admin/overview');
+  check('admin log out', r.status === 401);
 
   console.log('\nForgot password');
   r = await anon('POST', '/auth/forgot-password', { email: `nobody${stamp}@test.ng` });

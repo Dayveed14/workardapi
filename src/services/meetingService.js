@@ -9,6 +9,7 @@ import { notify, emailEach } from './notificationService.js';
 import { meetingInviteEmail } from './emailService.js';
 import { memberOfCondition } from '../utils/audience.js';
 import { toDateString, addDays } from '../utils/dates.js';
+import { occurrences, timeOn, describe, parseDays } from '../utils/repeat.js';
 import { env } from '../config/env.js';
 import AppError from '../utils/AppError.js';
 
@@ -16,7 +17,8 @@ import AppError from '../utils/AppError.js';
 // MEETINGS — scheduled here, held on LiveKit (video in the browser).
 //   For: chosen people, or a whole team / department / branch / company
 //        (a group needs meetings.schedule for it; anyone can invite chosen people)
-//   Repeats: none, daily, weekdays (Mon–Fri) or weekly — one row, many "occurrences"
+//   Repeats: daily / weekdays / chosen weekdays with their own times / monthly, every N,
+//            until a date, with single dates skipped — one row, many "occurrences" (utils/repeat.js)
 //   Join: Workard gives the person a short-lived LiveKit token for that day's room.
 //         Nobody can join a room without one, and only invited people get one.
 //   Stand-up: the room shows everyone's tasks — done since the last working day,
@@ -27,26 +29,10 @@ import AppError from '../utils/AppError.js';
 const JOIN_EARLY_MINUTES = 15; // the room opens 15 minutes before
 const JOIN_LATE_MINUTES = 60; //  …and stays joinable an hour after the planned end
 
-const datePart = (dt) => String(dt).slice(0, 10);
-const timePart = (dt) => String(dt).slice(11, 16);
 const weekday = (date) => new Date(`${date}T12:00:00`).getDay(); // 0 = Sunday
 
-// Every date this meeting happens on, between from and to
-export function occurrences(meeting, from, to) {
-  const first = datePart(meeting.starts_at);
-  const last = [to, meeting.repeat_until].filter(Boolean).sort()[0];
-  if (meeting.repeat_rule === 'none') return first >= from && first <= to ? [first] : [];
-  const dates = [];
-  for (let d = first; d <= last && dates.length < 400; d = addDays(d, 1)) {
-    if (d < from) continue;
-    const day = weekday(d);
-    if (meeting.repeat_rule === 'weekdays' && (day === 0 || day === 6)) continue;
-    if (meeting.repeat_rule === 'weekly' && day !== weekday(first)) continue;
-    dates.push(d);
-  }
-  return dates;
-}
-
+// Repeats (days, every N weeks, monthly, skipped dates) live in utils/repeat.js
+export { occurrences };
 function visibleCondition(auth) {
   const member = memberOfCondition(auth.employee, 'm');
   return {
@@ -66,7 +52,8 @@ async function getVisibleOrFail(auth, id) {
     { from: '1900-01-01', to: '9999-12-31' }
   );
   if (!visible && meeting.created_by !== auth.userId) throw new AppError(404, 'Meeting not found');
-  return meeting;
+  const [withSkips] = await meetingModel.withSkips([meeting]);
+  return withSkips;
 }
 
 // Everyone invited: the group's members + people added by name
@@ -82,18 +69,19 @@ const canEdit = (auth, meeting) => meeting.created_by === auth.userId || auth.ro
 
 // ---------- Calendar ----------
 export async function listRange(auth, { from, to }) {
-  const meetings = await meetingModel.listVisible(auth.orgId, visibleCondition(auth), { from, to });
+  const meetings = await meetingModel.withSkips(await meetingModel.listVisible(auth.orgId, visibleCondition(auth), { from, to }));
   const result = [];
   for (const m of meetings) {
     for (const date of occurrences(m, from, to)) {
       result.push({
         meetingId: m.id,
         date,
-        startsAt: `${date} ${timePart(m.starts_at)}`,
+        startsAt: `${date} ${timeOn(m, date)}`,
         durationMinutes: m.duration_minutes,
         title: m.title,
         isStandup: Boolean(m.is_standup),
         repeat: m.repeat_rule,
+        repeatText: describe(m),
         audienceName: m.audience_name,
         projectName: m.project_name,
         projectColor: m.project_color,
@@ -114,9 +102,14 @@ export async function inviteList(auth) {
 export async function getMeeting(auth, id) {
   const meeting = await getVisibleOrFail(auth, id);
   const people = await peopleFor(auth.orgId, meeting);
-  const next = occurrences(meeting, toDateString(), addDays(toDateString(), 400))[0] || null;
+  const upcoming = occurrences(meeting, toDateString(), addDays(toDateString(), 400)).slice(0, 8);
+  const next = upcoming[0] || null;
   return {
     ...meeting,
+    repeat_days: parseDays(meeting.repeat_days),
+    repeatText: describe(meeting),
+    upcoming: upcoming.map((date) => ({ date, time: timeOn(meeting, date) })),
+    skippedDates: meeting.skipped_dates,
     people: people.map(({ email: _e, ...p }) => p),
     invitedIds: (await meetingModel.invitees(meeting.id)).map((p) => p.id),
     nextDate: next,
@@ -134,7 +127,7 @@ async function checkInvitees(auth, ids) {
 
 async function tellPeople(auth, meeting, people, verb) {
   const others = people.filter((p) => p.user_id && p.user_id !== auth.userId);
-  const when = `${meeting.starts_at.slice(0, 16).replace(' ', ' at ')}${meeting.repeat_rule !== 'none' ? ` (repeats ${meeting.repeat_rule})` : ''}`;
+  const when = `${String(meeting.starts_at).slice(0, 16).replace(' ', ' at ')}${meeting.repeat_rule !== 'none' ? ` (${describe(meeting).toLowerCase()})` : ''}`;
   await notify(auth.orgId, others.map((p) => p.user_id), {
     type: `meeting.${verb}`,
     title: verb === 'cancelled' ? `Cancelled: ${meeting.title}` : `${auth.userName} invited you to “${meeting.title}”`,
@@ -162,6 +155,8 @@ export async function createMeeting(auth, data) {
     ...data,
     audienceId: data.audienceType === 'people' || data.audienceType === 'company' ? null : data.audienceId,
     startsAt: `${data.date} ${data.time}:00`,
+    repeatDays: data.repeat === 'weekly' ? JSON.stringify(data.repeatDays) : null,
+    repeatEvery: data.repeat === 'weekdays' || data.repeat === 'none' ? 1 : data.repeatEvery,
     createdBy: auth.userId,
   });
   // The organiser is always in the meeting
@@ -183,6 +178,8 @@ export async function updateMeeting(auth, id, data) {
   if (data.date && data.time) fields.starts_at = `${data.date} ${data.time}:00`;
   if (data.durationMinutes !== undefined) fields.duration_minutes = data.durationMinutes;
   if (data.repeat !== undefined) fields.repeat_rule = data.repeat;
+  if (data.repeatDays !== undefined) fields.repeat_days = (data.repeat ?? meeting.repeat_rule) === 'weekly' ? JSON.stringify(data.repeatDays) : null;
+  if (data.repeatEvery !== undefined) fields.repeat_every = data.repeatEvery;
   if (data.repeatUntil !== undefined) fields.repeat_until = data.repeatUntil || null;
   if (data.isStandup !== undefined) fields.is_standup = data.isStandup ? 1 : 0;
   await meetingModel.update(auth.orgId, id, fields);
@@ -206,6 +203,30 @@ export async function cancelMeeting(auth, id) {
   await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: 'meeting.cancelled', details: meeting.title });
 }
 
+// Cancel just one date of a repeating meeting (e.g. a public holiday) — or bring it back
+export async function skipDate(auth, id, date, skip = true) {
+  const meeting = await getVisibleOrFail(auth, id);
+  if (!canEdit(auth, meeting)) throw new AppError(403, 'Only the person who scheduled it can change it');
+  if (meeting.repeat_rule === 'none') throw new AppError(409, 'This meeting doesn’t repeat — cancel the whole meeting instead');
+  if (skip) {
+    if (!occurrences(meeting, date, date).length) throw new AppError(409, 'This meeting doesn’t happen on that day');
+    if (date < toDateString()) throw new AppError(409, 'That date has passed');
+    await meetingModel.addSkip(meeting.id, date);
+    const people = await peopleFor(auth.orgId, meeting);
+    await notify(auth.orgId, people.map((p) => p.user_id).filter(Boolean), {
+      type: 'meeting.cancelled',
+      title: `${meeting.title} on ${date} is off`,
+      body: 'Just this date — the other dates go ahead as planned.',
+      link: `/meetings/${meeting.id}`,
+      actorUserId: auth.userId,
+    });
+  } else {
+    await meetingModel.removeSkip(meeting.id, date);
+  }
+  await auditModel.log({ orgId: auth.orgId, userId: auth.userId, action: skip ? 'meeting.date_cancelled' : 'meeting.date_restored', details: `${meeting.title} ${date}` });
+  return getMeeting(auth, id);
+}
+
 // ---------- Joining (LiveKit) ----------
 export async function join(auth, id, date = toDateString(), now = new Date()) {
   const meeting = await getVisibleOrFail(auth, id);
@@ -215,7 +236,7 @@ export async function join(auth, id, date = toDateString(), now = new Date()) {
   if (!invited) throw new AppError(403, 'You’re not invited to this meeting');
   if (!occurrences(meeting, date, date).length) throw new AppError(409, 'This meeting doesn’t happen on that day');
 
-  const start = new Date(`${date}T${timePart(meeting.starts_at)}:00`);
+  const start = new Date(`${date}T${timeOn(meeting, date)}:00`);
   const opens = new Date(start.getTime() - JOIN_EARLY_MINUTES * 60_000);
   const closes = new Date(start.getTime() + (meeting.duration_minutes + JOIN_LATE_MINUTES) * 60_000);
   if (now < opens) throw new AppError(409, `The room opens at ${opens.toTimeString().slice(0, 5)}, ${JOIN_EARLY_MINUTES} minutes before the start`);
@@ -252,7 +273,7 @@ export async function standup(auth, id, date = toDateString()) {
   const joined = new Set((await meetingModel.attendance(meeting.id, date)).map((a) => a.user_id));
   return {
     date,
-    since: datePart(since),
+    since: String(since).slice(0, 10),
     projectName: meeting.project_name,
     people: people.map((p) => {
       const mine = tasks.filter((t) => t.employee_id === p.id);

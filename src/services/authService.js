@@ -132,6 +132,7 @@ export async function login({ email, password }) {
   const user = await userModel.findByEmail(email);
   const ok = await bcrypt.compare(password, user ? user.password_hash : DUMMY_HASH);
   if (!user || !ok) throw new AppError(401, 'Incorrect email or password');
+  if (user.locked_at) throw new AppError(403, 'This account is locked. Write to hello@workard.com.');
 
   const organizations = await membershipModel.listOrganizationsForUser(user.id);
   if (!organizations.length) throw new AppError(403, 'Your account is not active in any organisation');
@@ -148,6 +149,8 @@ export async function verifyOtp(req, res, { challengeToken, code }) {
   if (!challenge) throw new AppError(401, 'This verification has expired. Please log in again.');
 
   await otpService.verifyCode(challenge.userId, challenge.purpose, code);
+  const locked = await userModel.findById(challenge.userId);
+  if (locked?.locked_at) throw new AppError(403, 'This account is locked. Write to hello@workard.com.');
   if (challenge.purpose === 'signup') await userModel.markEmailVerified(challenge.userId);
 
   const [firstOrg] = await membershipModel.listOrganizationsForUser(challenge.userId);
@@ -220,6 +223,7 @@ export async function refresh(req, res) {
 
   await refreshTokenModel.revoke(stored.id, now);
   const userId = Number(payload.sub);
+  if ((await userModel.findById(userId))?.locked_at) throw fail(); // locked by Workard
   const session = await buildSession(userId, stored.organization_id);
   if (!session) throw fail();
 

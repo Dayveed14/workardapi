@@ -46,3 +46,13 @@ export const join = asyncHandler(async (req, res) => {
 export const standup = asyncHandler(async (req, res) => {
   res.json(await meetingService.standup(req.auth, req.params.id, req.validatedQuery.date));
 });
+
+// POST /api/meetings/:id/skip { date } — cancel just that date of a repeating meeting
+export const skip = asyncHandler(async (req, res) => {
+  res.json(await meetingService.skipDate(req.auth, req.params.id, req.body.date, true));
+});
+
+// DELETE /api/meetings/:id/skip?date= — bring a cancelled date back
+export const unskip = asyncHandler(async (req, res) => {
+  res.json(await meetingService.skipDate(req.auth, req.params.id, req.validatedQuery.date, false));
+});

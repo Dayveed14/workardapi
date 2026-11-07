@@ -1,4 +1,5 @@
 import asyncHandler from '../utils/asyncHandler.js';
+import * as supportService from '../services/supportService.js';
 import * as authService from '../services/authService.js';
 import AppError from '../utils/AppError.js';
 
@@ -44,6 +45,7 @@ export const logout = asyncHandler(async (req, res) => {
 
 // GET /api/auth/me
 export const me = asyncHandler(async (req, res) => {
+  if (req.auth.support) return res.json(await supportService.sessionFor(req.auth)); // a Workard support visit
   const session = await authService.buildSession(req.auth.userId, req.auth.orgId);
   if (!session) throw new AppError(401, 'Not authenticated');
   res.json(session);

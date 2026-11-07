@@ -53,7 +53,7 @@ export async function setStatus(userId, orgId, status, db = pool) {
 // Used by middleware/auth.js on every request, so role changes apply immediately.
 export async function findContext(userId, orgId, db = pool) {
   const [rows] = await db.query(
-    `SELECT m.user_id, m.organization_id, u.full_name,
+    `SELECT m.user_id, m.organization_id, u.full_name, u.locked_at,
             r.id AS role_id, r.name AS role_name, r.is_owner, r.permissions,
             e.id AS employee_id, e.branch_id, e.department_id, e.team_id,
             s.plan AS sub_plan, s.status AS sub_status, s.current_period_end AS sub_period_end, s.is_legacy AS sub_is_legacy, s.created_at AS sub_created_at
@@ -71,6 +71,7 @@ export async function findContext(userId, orgId, db = pool) {
   return {
     userId: r.user_id,
     userName: r.full_name,
+    locked: Boolean(r.locked_at),
     orgId: r.organization_id,
     role: { id: r.role_id, name: r.role_name, isOwner: !!r.is_owner },
     // The Owner always has every permission — including ones added in a later update,

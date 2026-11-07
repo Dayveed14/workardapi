@@ -31,3 +31,24 @@ export const feedbackReplySchema = z.object({
 export const feedbackListSchema = z.object({
   status: z.enum(['received', 'in_review', 'resolved']).optional(),
 });
+
+// Settings → Loans & advances (percentages come in as e.g. 5 or 2.5 and are stored as basis points)
+const percentToBp = z.coerce.number().min(0, 'Can’t be negative').max(100, 'At most 100%').transform((v) => Math.round(v * 100));
+export const requestSettingsSchema = z
+  .object({
+    loansEnabled: z.boolean(),
+    loanMaxPercent: z.coerce.number().int().min(1, 'At least 1%').max(500, 'At most 500%'),
+    loanMaxNaira: z.preprocess((v) => (v === '' || v === null || v === undefined ? null : v), z.coerce.number().int().min(1000, 'At least ₦1,000').nullable()),
+    loanMonths: z.coerce.number().int().min(1, 'At least 1 month').max(60, 'At most 60 months'),
+    loanInterestPercent: percentToBp,
+    advancesEnabled: z.boolean(),
+    advanceMaxPercent: z.coerce.number().int().min(1, 'At least 1%').max(100, 'At most 100% of a month’s basic'),
+    advanceMonths: z.coerce.number().int().min(1, 'At least 1 month').max(6, 'At most 6 months'),
+    advanceInterestPercent: percentToBp,
+  })
+  .transform(({ loanMaxNaira, loanInterestPercent, advanceInterestPercent, ...r }) => ({
+    ...r,
+    loanMaxKobo: loanMaxNaira === null ? null : loanMaxNaira * 100,
+    loanInterestBp: loanInterestPercent,
+    advanceInterestBp: advanceInterestPercent,
+  }));

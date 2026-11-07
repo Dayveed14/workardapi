@@ -1,3 +1,4 @@
+import * as requestSettingsService from '../services/requestSettingsService.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import * as staffRequestService from '../services/staffRequestService.js';
 import * as feedbackService from '../services/feedbackService.js';
@@ -72,4 +73,15 @@ export const feedbackByToken = asyncHandler(async (req, res) => {
 // POST /api/requests/feedback/private/:token/replies  { body }
 export const replyByToken = asyncHandler(async (req, res) => {
   res.json(await feedbackService.replyByToken(req.auth, req.params.token, req.body));
+});
+
+// ---------- Settings → Loans & advances ----------
+export const getSettings = asyncHandler(async (req, res) => {
+  res.json({ ...(await requestSettingsService.getRules(req.auth.orgId)), defaults: requestSettingsService.defaults() });
+});
+export const updateSettings = asyncHandler(async (req, res) => {
+  res.json({ ...(await requestSettingsService.updateRules(req.auth, req.body)), defaults: requestSettingsService.defaults() });
+});
+export const resetSettings = asyncHandler(async (req, res) => {
+  res.json({ ...(await requestSettingsService.resetRules(req.auth)), defaults: requestSettingsService.defaults() });
 });

@@ -66,7 +66,7 @@ export async function setReview(id, { status, note, reviewedBy, reviewedAt }, db
 // and whether they are on approved leave that day.
 export async function register(orgId, workDate, scope, db = pool) {
   const [rows] = await db.query(
-    `SELECT e.id AS employee_id, e.first_name, e.last_name, e.job_title, e.photo_url,
+    `SELECT e.id AS employee_id, e.staff_id, e.first_name, e.last_name, e.job_title, e.photo_url,
             b.name AS branch_name, d.name AS department_name,
             a.id AS attendance_id, a.clock_in_at, a.clock_out_at, a.is_late, a.minutes_worked,
             a.is_flagged, a.flag_reason, a.review_status, a.distance_m, a.location_ok, a.wifi_ok, a.clock_in_ip,

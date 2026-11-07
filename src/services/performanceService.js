@@ -94,6 +94,7 @@ export async function getPerformance(auth, scope, { month, months = 1, departmen
 
     return {
       employeeId: p.id,
+      staffId: p.staff_id,
       firstName: p.first_name,
       lastName: p.last_name,
       jobTitle: p.job_title,

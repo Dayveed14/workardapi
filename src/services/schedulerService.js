@@ -1,3 +1,5 @@
+import * as blogModel from '../models/blogModel.js';
+import { requestRebuild } from './deployHookService.js';
 import { deleteOldRead } from '../models/notificationModel.js';
 import { escalateUnansweredFlags } from './attendanceService.js';
 import { pool } from '../config/db.js';
@@ -57,6 +59,8 @@ export async function sendTaskDigests(today = toDateString()) {
   return sent;
 }
 
+let lastBlogCheck = new Date();
+
 export async function runDailyJobs(now = new Date()) {
   const today = toDateString(now);
   const result = { recurringCreated: 0, flagsEscalated: 0, digestsSent: null };
@@ -66,6 +70,10 @@ export async function runDailyJobs(now = new Date()) {
   result.flagsEscalated = await escalateUnansweredFlags(now);
   // Read notifications older than 90 days are cleared
   result.notificationsCleared = await deleteOldRead(90);
+  // Scheduled blog posts that went live since the last run → rebuild the website
+  const wentLive = await blogModel.wentLiveSince(lastBlogCheck);
+  lastBlogCheck = now;
+  if (wentLive) result.websiteRebuild = requestRebuild('scheduled blog post went live');
 
   const weekday = now.getDay();
   const isWorkingDay = weekday !== 0 && weekday !== 6;

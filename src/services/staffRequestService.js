@@ -5,7 +5,8 @@ import * as payrollRunModel from '../models/payrollRunModel.js';
 import * as auditModel from '../models/auditModel.js';
 import { notify, notifyEmployees, reviewersFor } from './notificationService.js';
 import { withTransaction } from '../config/db.js';
-import { LOAN, ADVANCE, repaymentPlan } from '../config/requestRules.js';
+import { repaymentPlan } from '../config/requestRules.js';
+import { getRules } from './requestSettingsService.js';
 import { scopeCondition } from '../utils/scope.js';
 import { formatNaira } from '../utils/money.js';
 import AppError from '../utils/AppError.js';
@@ -17,7 +18,8 @@ import AppError from '../utils/AppError.js';
 //   payroll team   → pays the money out and clicks "Mark as paid out"
 //   every payroll  → the monthly repayment is deducted automatically
 //                    (shown on the payslip), until it's all repaid
-// Limits & interest: config/requestRules.js
+// Limits, months & interest: each company's own (Settings → Loans & advances,
+// requestSettingsService); the defaults are in config/requestRules.js
 // ============================================================
 
 const TYPE_NAMES = { advance: 'salary advance', loan: 'staff loan' };
@@ -34,14 +36,27 @@ export async function myLimits(auth) {
   const basic = Number(pay?.basic_kobo || 0);
   const openLoans = await requestModel.openLoanTotal(me.id);
   const advanceOpen = await requestModel.hasOpenAdvance(me.id);
+  const rules = await getRules(auth.orgId);
+  // Loan ceiling: X% of a year's basic, never above the company's ₦ ceiling (if it set one)
+  const loanCeiling = Math.min(Math.floor((basic * 12 * rules.loanMaxPercent) / 100), rules.loanMaxKobo ?? Infinity);
   return {
     basicMonthlyKobo: basic,
-    advance: { maxKobo: advanceOpen ? 0 : basic * ADVANCE.maxMonthsOfBasic, open: advanceOpen, months: ADVANCE.months },
+    advance: {
+      enabled: rules.advancesEnabled,
+      maxKobo: !rules.advancesEnabled || advanceOpen ? 0 : Math.floor((basic * rules.advanceMaxPercent) / 100),
+      open: advanceOpen,
+      maxPercent: rules.advanceMaxPercent,
+      months: rules.advanceMonths,
+      interestRateBp: rules.advanceInterestBp,
+    },
     loan: {
-      maxKobo: Math.max(0, basic * 12 * LOAN.maxTimesAnnualBasic - openLoans),
+      enabled: rules.loansEnabled,
+      maxKobo: rules.loansEnabled ? Math.max(0, loanCeiling - openLoans) : 0,
       openKobo: openLoans,
-      months: LOAN.months,
-      interestRateBp: LOAN.interestRateBp,
+      maxPercent: rules.loanMaxPercent,
+      ceilingKobo: rules.loanMaxKobo,
+      months: rules.loanMonths,
+      interestRateBp: rules.loanInterestBp,
     },
   };
 }
@@ -50,13 +65,14 @@ export async function createRequest(auth, { type, amountKobo, reason }) {
   const me = requireEmployee(auth);
   const limits = await myLimits(auth);
   if (!limits.basicMonthlyKobo) throw new AppError(422, 'Your salary isn’t set up in payroll yet — ask HR first');
+  if (!limits[type].enabled) throw new AppError(403, `Your company doesn’t offer ${TYPE_NAMES[type]}s`);
   if (type === 'advance' && limits.advance.open) throw new AppError(409, 'You already have a salary advance open');
   const max = limits[type].maxKobo;
   if (amountKobo > max) {
     throw new AppError(422, `The most you can ask for is ${formatNaira(max)}`, { amount: `Up to ${formatNaira(max)}` });
   }
 
-  const plan = repaymentPlan(type, amountKobo);
+  const plan = repaymentPlan(await getRules(auth.orgId), type, amountKobo);
   const id = await requestModel.create(auth.orgId, {
     employeeId: me.id,
     type,

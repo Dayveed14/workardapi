@@ -9,6 +9,7 @@ import {
   feedbackSchema,
   feedbackReplySchema,
   feedbackListSchema,
+  requestSettingsSchema,
 } from '../validators/requestSchemas.js';
 
 // Staff requests. Who can approve / pay out is checked in staffRequestService.
@@ -30,6 +31,10 @@ router.post('/feedback/:id/replies', validate(feedbackReplySchema), staffRequest
 const payroll = requireFeature('payroll');
 router.get('/', payroll, validate(requestListSchema, 'query'), staffRequestController.list);
 router.get('/limits', payroll, staffRequestController.limits);
+// The company's rules (anyone can read them; the payroll team changes them)
+router.get('/settings', payroll, staffRequestController.getSettings);
+router.put('/settings', payroll, requirePermission('payroll.manage'), validate(requestSettingsSchema), staffRequestController.updateSettings);
+router.delete('/settings', payroll, requirePermission('payroll.manage'), staffRequestController.resetSettings);
 router.post('/', payroll, validate(staffRequestSchema), staffRequestController.create);
 router.get('/:id', payroll, staffRequestController.getOne);
 router.patch('/:id/decision', payroll, validate(decisionSchema), staffRequestController.decide);

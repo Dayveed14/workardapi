@@ -1,6 +1,8 @@
 import { ACCESS_COOKIE } from '../utils/cookies.js';
 import { verifyAccessToken } from '../services/tokenService.js';
 import { findContext } from '../models/membershipModel.js';
+import { findSuspension } from '../models/platformModel.js';
+import { contextFor as supportContext } from '../services/supportService.js';
 import AppError from '../utils/AppError.js';
 
 // Checks the JWT, then loads who this person is in the current organisation:
@@ -25,10 +27,31 @@ export async function requireAuth(req, res, next) {
       throw new AppError(401, 'Session expired');
     }
 
+    // A Workard support visit (the owner allowed it): read-only, no plan checks
+    if (payload.sup) {
+      const visit = await supportContext(payload);
+      if (!visit) throw new AppError(401, 'The support access has ended');
+      req.auth = visit;
+      const canWrite = ['/api/auth/logout'].some((p) => req.originalUrl.startsWith(p));
+      if (req.method !== 'GET' && !canWrite) throw new AppError(403, 'Workard support access is read-only');
+      return next();
+    }
+
     const context = await findContext(Number(payload.sub), Number(payload.oid));
     if (!context) throw new AppError(401, 'Your access to this organisation has ended');
+    if (context.locked) throw new AppError(401, 'This account is locked. Write to hello@workard.com.');
 
     req.auth = context;
+
+    // Suspended by Workard: nothing works except logging out
+    const suspension = await findSuspension(context.orgId);
+    if (suspension && !req.originalUrl.startsWith('/api/auth/logout')) {
+      return res.status(423).json({
+        code: 'ORGANIZATION_SUSPENDED',
+        message: `This company’s Workard account is suspended: ${suspension.suspended_reason}. Write to hello@workard.com to sort it out.`,
+        reason: suspension.suspended_reason,
+      });
+    }
 
     // Unpaid or expired plan: only sign-in and billing work until the owner pays
     const allowed = ['/api/auth/', '/api/billing'].some((p) => req.originalUrl.startsWith(p));

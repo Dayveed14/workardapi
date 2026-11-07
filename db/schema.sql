@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash   VARCHAR(255) NOT NULL,
   email_verified  TINYINT(1)   NOT NULL DEFAULT 0,
   last_login_at   DATETIME     NULL,
+  locked_at       DATETIME     NULL,       -- locked by a Workard super admin: can't log in
   created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_email (email)
@@ -30,6 +31,8 @@ CREATE TABLE IF NOT EXISTS organizations (
   size        VARCHAR(20)  NULL,
   currency    CHAR(3)      NOT NULL DEFAULT 'NGN',
   plan        ENUM('free','business','pro') NOT NULL DEFAULT 'free',
+  suspended_at      DATETIME NULL,          -- suspended by a Workard super admin (nobody can use it)
+  suspended_reason  VARCHAR(255) NULL,
   created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -244,7 +247,7 @@ CREATE TABLE IF NOT EXISTS leave_requests (
 CREATE TABLE IF NOT EXISTS otp_codes (
   id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id     BIGINT UNSIGNED NOT NULL,
-  purpose     ENUM('signup','login','reset') NOT NULL,
+  purpose     ENUM('signup','login','reset','admin') NOT NULL,
   code_hash   CHAR(64) NOT NULL,
   attempts    TINYINT UNSIGNED NOT NULL DEFAULT 0,
   expires_at  DATETIME NOT NULL,
@@ -1016,7 +1019,7 @@ CREATE TABLE IF NOT EXISTS staff_requests (
   amount_kobo             BIGINT NOT NULL,              -- what the employee receives
   interest_rate_bp        INT UNSIGNED NOT NULL DEFAULT 0,  -- 500 = 5%
   total_repayable_kobo    BIGINT NOT NULL,              -- amount + interest
-  months                  TINYINT UNSIGNED NOT NULL,    -- 1 for an advance, 12 for a loan
+  months                  TINYINT UNSIGNED NOT NULL,    -- copied from the company's rules when asked
   monthly_deduction_kobo  BIGINT NOT NULL,
   repaid_kobo             BIGINT NOT NULL DEFAULT 0,
   reason                  VARCHAR(1000) NULL,
@@ -1031,6 +1034,24 @@ CREATE TABLE IF NOT EXISTS staff_requests (
   KEY idx_req_emp (employee_id, status),
   CONSTRAINT fk_req_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
   CONSTRAINT fk_req_emp FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Each company's own loan & advance rules (Settings → Loans & advances).
+-- No row = the defaults in config/requestRules.js (100% of yearly basic, 12 months, 5% flat).
+CREATE TABLE IF NOT EXISTS staff_request_settings (
+  organization_id      BIGINT UNSIGNED PRIMARY KEY,
+  loans_enabled        TINYINT(1) NOT NULL DEFAULT 1,
+  loan_max_percent     SMALLINT UNSIGNED NOT NULL DEFAULT 100,   -- % of a YEAR's basic pay
+  loan_max_kobo        BIGINT NULL,                              -- optional fixed ceiling
+  loan_months          TINYINT UNSIGNED NOT NULL DEFAULT 12,
+  loan_interest_bp     INT UNSIGNED NOT NULL DEFAULT 500,        -- 500 = 5% flat
+  advances_enabled     TINYINT(1) NOT NULL DEFAULT 1,
+  advance_max_percent  SMALLINT UNSIGNED NOT NULL DEFAULT 100,   -- % of a MONTH's basic pay
+  advance_months       TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  advance_interest_bp  INT UNSIGNED NOT NULL DEFAULT 0,
+  updated_by           BIGINT UNSIGNED NULL,
+  updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_reqset_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- One row per request per paid payroll: the repayment taken from that month's salary.
@@ -1172,7 +1193,9 @@ CREATE TABLE IF NOT EXISTS meetings (
   project_id        BIGINT UNSIGNED NULL,
   starts_at         DATETIME NOT NULL,          -- the first (or only) time
   duration_minutes  SMALLINT UNSIGNED NOT NULL DEFAULT 30,
-  repeat_rule       ENUM('none','daily','weekdays','weekly') NOT NULL DEFAULT 'none',
+  repeat_rule       ENUM('none','daily','weekdays','weekly','monthly') NOT NULL DEFAULT 'none',
+  repeat_every      TINYINT UNSIGNED NOT NULL DEFAULT 1,  -- every N days / weeks / months
+  repeat_days       VARCHAR(200) NULL,           -- weekly: [{"day":3,"time":"10:00"},{"day":5,"time":"14:30"}] (0 = Sunday)
   repeat_until      DATE NULL,
   is_standup        TINYINT(1) NOT NULL DEFAULT 0,
   created_by        BIGINT UNSIGNED NOT NULL,
@@ -1193,6 +1216,14 @@ CREATE TABLE IF NOT EXISTS meeting_invitees (
   CONSTRAINT fk_mi_emp FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- Single dates of a repeating meeting the organiser cancelled ("just this Friday")
+CREATE TABLE IF NOT EXISTS meeting_skips (
+  meeting_id  BIGINT UNSIGNED NOT NULL,
+  skip_date   DATE NOT NULL,
+  PRIMARY KEY (meeting_id, skip_date),
+  CONSTRAINT fk_mskip_meet FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 -- Who joined which day's meeting (first join only)
 CREATE TABLE IF NOT EXISTS meeting_attendance (
   meeting_id       BIGINT UNSIGNED NOT NULL,
@@ -1201,4 +1232,102 @@ CREATE TABLE IF NOT EXISTS meeting_attendance (
   joined_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (meeting_id, occurrence_date, user_id),
   CONSTRAINT fk_ma_meet FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- PLATFORM (Workard itself) — super admins, settings, blog, support access
+-- These are not part of any company. See STRUCTURE.md "Super admin".
+-- ============================================================
+
+-- Workard staff who run the platform. All super admins have the same rights.
+-- A new admin sets their password through a one-time link (setup_token_hash).
+CREATE TABLE IF NOT EXISTS platform_admins (
+  user_id            BIGINT UNSIGNED PRIMARY KEY,
+  added_by           BIGINT UNSIGNED NULL,
+  setup_token_hash   CHAR(64) NULL,
+  setup_expires_at   DATETIME NULL,
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_padmin_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Everything a super admin does (who, what, to which company / user / post)
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  admin_user_id  BIGINT UNSIGNED NOT NULL,
+  action         VARCHAR(60) NOT NULL,
+  target_type    VARCHAR(30) NULL,
+  target_id      BIGINT UNSIGNED NULL,
+  details        VARCHAR(500) NULL,
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_aa_time (created_at)
+) ENGINE=InnoDB;
+
+-- Settings the super admin can change without a deploy: plan prices, trial length.
+-- value is JSON text, e.g. key 'prices' → {"starter":{"monthly":1500000,"yearly":15598800},…}
+CREATE TABLE IF NOT EXISTS platform_settings (
+  setting_key  VARCHAR(60) PRIMARY KEY,
+  value        TEXT NOT NULL,
+  updated_by   BIGINT UNSIGNED NULL,
+  updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- The company owner lets Workard support look around (read-only) for a few hours
+CREATE TABLE IF NOT EXISTS support_grants (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  granted_by       BIGINT UNSIGNED NOT NULL,
+  reason           VARCHAR(255) NULL,
+  expires_at       DATETIME NOT NULL,
+  revoked_at       DATETIME NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_sg_org (organization_id, expires_at),
+  CONSTRAINT fk_sg_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- "Book a demo" requests from the website
+CREATE TABLE IF NOT EXISTS demo_requests (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  full_name     VARCHAR(120) NOT NULL,
+  email         VARCHAR(190) NOT NULL,
+  phone         VARCHAR(30)  NULL,
+  company       VARCHAR(160) NULL,
+  company_size  VARCHAR(20)  NULL,
+  message       VARCHAR(1000) NULL,
+  status        ENUM('new','contacted','closed') NOT NULL DEFAULT 'new',
+  note          VARCHAR(500) NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_demo_status (status, created_at)
+) ENGINE=InnoDB;
+
+-- Messages from Workard to company owners (bell + optional email)
+CREATE TABLE IF NOT EXISTS platform_announcements (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  title         VARCHAR(200) NOT NULL,
+  body          VARCHAR(2000) NOT NULL,
+  audience      ENUM('all','trial','paying') NOT NULL DEFAULT 'all',
+  emailed       TINYINT(1) NOT NULL DEFAULT 0,
+  sent_to       INT UNSIGNED NOT NULL DEFAULT 0,
+  created_by    BIGINT UNSIGNED NOT NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- The blog on the website. published_at in the future = scheduled.
+CREATE TABLE IF NOT EXISTS blog_posts (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  slug             VARCHAR(160) NOT NULL,
+  title            VARCHAR(200) NOT NULL,
+  excerpt          VARCHAR(400) NULL,
+  body_html        MEDIUMTEXT NOT NULL,
+  cover_url        VARCHAR(500) NULL,
+  category         VARCHAR(60) NULL,
+  seo_title        VARCHAR(200) NULL,
+  seo_description  VARCHAR(300) NULL,
+  status           ENUM('draft','published') NOT NULL DEFAULT 'draft',
+  published_at     DATETIME NULL,
+  author_user_id   BIGINT UNSIGNED NOT NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_blog_slug (slug),
+  KEY idx_blog_pub (status, published_at)
 ) ENGINE=InnoDB;

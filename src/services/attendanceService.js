@@ -233,6 +233,7 @@ export async function getMonthly(auth, scope, monthArg) {
     const current = monthAdherence({ ...input, month });
     return {
       employeeId: p.id,
+      staffId: p.staff_id,
       firstName: p.first_name,
       lastName: p.last_name,
       jobTitle: p.job_title,
