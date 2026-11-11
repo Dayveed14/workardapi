@@ -30,9 +30,10 @@ function requireManage(auth) {
 }
 
 // ---------- Checklists (templates) ----------
-export async function listTemplates(auth) {
+// kind: 'onboarding' or 'offboarding' (the same checklist editor is used for both)
+export async function listTemplates(auth, kind = 'onboarding') {
   requireManage(auth);
-  return onboardingModel.listTemplates(auth.orgId);
+  return onboardingModel.listTemplates(auth.orgId, kind);
 }
 
 export async function getTemplate(auth, id) {
@@ -85,7 +86,7 @@ export async function startOnboarding(auth, { employeeId, templateId, startDate 
   const employee = await employeeModel.findById(auth.orgId, employeeId);
   if (!employee || employee.status !== 'active') throw new AppError(422, 'Choose an active employee', { employeeId: 'Choose someone' });
   const template = await onboardingModel.findTemplate(auth.orgId, templateId);
-  if (!template) throw new AppError(422, 'Choose a checklist', { templateId: 'Choose a checklist' });
+  if (!template || template.kind !== 'onboarding') throw new AppError(422, 'Choose a checklist', { templateId: 'Choose a checklist' });
   const items = await onboardingModel.listTemplateItems(templateId);
   if (!items.length) throw new AppError(422, 'This checklist has no items yet', { templateId: 'Add items to this checklist first' });
 

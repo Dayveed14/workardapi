@@ -257,6 +257,40 @@ export const DEFAULT_ONBOARDING_TEMPLATES = [
   },
 ];
 
+// Two starter OFFBOARDING checklists (someone leaving). owner: 'new_joiner' here means the person leaving.
+// day: days after the notice starts; never later than their last day. asksForNote: they write something.
+export const DEFAULT_OFFBOARDING_TEMPLATES = [
+  {
+    name: 'Resignation (notice period)',
+    description: 'For someone serving their notice',
+    suits: 'resignation',
+    items: [
+      { title: 'Write a handover note', owner: 'new_joiner', day: 14, asksForNote: true, description: 'What you work on, where things are, who to call, what’s unfinished.' },
+      { title: 'Hand over your current work and tasks to your manager', owner: 'new_joiner', day: 21 },
+      { title: 'Return company documents in your possession', owner: 'new_joiner', day: 25, asksForNote: true, description: 'List what you returned and to whom.' },
+      { title: 'Return company assets (laptop, phone, ID card, keys)', owner: 'new_joiner', day: 28, asksForNote: true, description: 'List each item and who received it.' },
+      { title: 'Hold an exit interview', owner: 'hr', day: 25 },
+      { title: 'Collect company assets and ID card', owner: 'hr', day: 28 },
+      { title: 'Remove access to company accounts and email', owner: 'hr', day: 30 },
+      { title: 'Work out final pay and unused leave', owner: 'hr', day: 30 },
+      { title: 'Issue a clearance / service letter', owner: 'hr', day: 30 },
+    ],
+  },
+  {
+    name: 'Exit within 24 hours',
+    description: 'When the company ends someone’s employment',
+    suits: 'termination',
+    items: [
+      { title: 'Return company assets (laptop, phone, ID card, keys)', owner: 'new_joiner', day: 0, asksForNote: true, description: 'List each item and who received it.' },
+      { title: 'Return company documents in your possession', owner: 'new_joiner', day: 0, asksForNote: true },
+      { title: 'Write a short handover note', owner: 'new_joiner', day: 0, asksForNote: true },
+      { title: 'Collect company assets and ID card', owner: 'hr', day: 0 },
+      { title: 'Remove access to company accounts and email', owner: 'hr', day: 0 },
+      { title: 'Work out final pay', owner: 'hr', day: 0 },
+    ],
+  },
+];
+
 export const DEFAULT_FINANCE_CATEGORIES = {
   income: ['Sales (not invoiced)', 'Services', 'Commission', 'Grants & loans', 'Other income'],
   expense: [

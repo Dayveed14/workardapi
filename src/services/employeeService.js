@@ -4,6 +4,7 @@ import * as departmentModel from '../models/departmentModel.js';
 import * as teamModel from '../models/teamModel.js';
 import * as membershipModel from '../models/membershipModel.js';
 import * as auditModel from '../models/auditModel.js';
+import * as offboardingModel from '../models/offboardingModel.js';
 import { getEmployeeOrFail } from './accessService.js';
 import { sendInvite } from './inviteService.js';
 import { uploadFile, deleteFile } from './uploadService.js';
@@ -80,8 +81,8 @@ export async function updateEmployee(auth, id, data) {
   return employeeModel.findById(auth.orgId, id);
 }
 
-// Exit = the person leaves the company. Their records stay; their login stops working.
-export async function exitEmployee(auth, id, { exitDate }) {
+// Who may exit this person (used by "Exit" and by offboarding). Returns the employee.
+export async function checkCanExit(auth, id) {
   const employee = await getEmployeeOrFail(auth, 'employees.exit', id);
   if (auth.employee && auth.employee.id === employee.id) throw new AppError(409, 'You cannot exit yourself');
   if (employee.status === 'exited') throw new AppError(409, 'This employee has already exited');
@@ -89,18 +90,30 @@ export async function exitEmployee(auth, id, { exitDate }) {
     const roleIsOwner = employee.role_name === 'Owner';
     if (roleIsOwner && !auth.role.isOwner) throw new AppError(403, 'Only an owner can exit another owner');
   }
+  return employee;
+}
 
-  await employeeModel.setExited(auth.orgId, id, exitDate || toDateString());
-  if (employee.user_id) await membershipModel.setStatus(employee.user_id, auth.orgId, 'disabled');
-
+// The moment someone actually leaves: status "exited", their login stops working,
+// any offboarding still open is closed. Their records stay. actorUserId null = the system (last day reached).
+export async function completeExit(orgId, employee, exitDate, actorUserId) {
+  await employeeModel.setExited(orgId, employee.id, exitDate);
+  if (employee.user_id) await membershipModel.setStatus(employee.user_id, orgId, 'disabled');
+  const open = await offboardingModel.findLatestForEmployee(orgId, employee.id);
+  if (open && ['notice', 'in_progress'].includes(open.status)) await offboardingModel.close(open.id, 'exited');
   await auditModel.log({
-    orgId: auth.orgId,
-    userId: auth.userId,
+    orgId,
+    userId: actorUserId,
     action: 'employee.exited',
     entityType: 'employee',
-    entityId: id,
-    details: `${employee.first_name} ${employee.last_name}`,
+    entityId: employee.id,
+    details: `${employee.first_name} ${employee.last_name}${actorUserId ? '' : ' (last day reached)'}`,
   });
+}
+
+// Exit straight away, without a checklist (offboarding has the gentler routes)
+export async function exitEmployee(auth, id, { exitDate }) {
+  const employee = await checkCanExit(auth, id);
+  await completeExit(auth.orgId, employee, exitDate || toDateString(), auth.userId);
   return employeeModel.findById(auth.orgId, id);
 }
 

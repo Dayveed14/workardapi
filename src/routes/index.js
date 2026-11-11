@@ -27,6 +27,7 @@ import resourceRoutes from './resourceRoutes.js';
 import projectRoutes from './projectRoutes.js';
 import meetingRoutes from './meetingRoutes.js';
 import adminRoutes from './adminRoutes.js';
+import offboardingRoutes from './offboardingRoutes.js';
 import siteRoutes from './siteRoutes.js';
 import supportRoutes from './supportRoutes.js';
 
@@ -67,7 +68,8 @@ router.use('/jobs', jobRoutes); //             daily jobs trigger for an outside
 
 // Plans & onboarding
 router.use('/billing', billingRoutes); //       plans, paying the yearly subscription (Paystack)
-router.use('/onboarding', onboardingRoutes); // new-joiner checklists
+router.use('/onboarding', onboardingRoutes); //   new-joiner checklists
+router.use('/offboarding', offboardingRoutes); // someone leaving: resignation / 24-hour exit + checklist
 
 // Working together
 router.use('/notifications', notificationRoutes); // the bell

@@ -50,6 +50,8 @@ export const checklistToggleSchema = z.object({ isDone: z.boolean() });
 
 export const commentSchema = z.object({
   body: z.string({ required_error: 'Write a comment' }).trim().min(1, 'Write a comment').max(3000),
+  // user ids of the people tagged with @ (only they are notified)
+  mentionUserIds: z.array(z.coerce.number().int().positive()).max(30).default([]),
 });
 
 export const recurringTaskSchema = z

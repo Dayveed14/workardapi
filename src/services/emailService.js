@@ -353,3 +353,31 @@ export function passwordResetNudgeEmail({ firstName, link }) {
       <p style="color:#64748b">Didn’t ask for this? You can ignore it — nothing changes until you choose a new password.</p>`),
   };
 }
+
+// ---------- Offboarding (someone leaving) ----------
+export function resignationReceivedEmail({ firstName, employeeName, lastDay, reason, link }) {
+  return {
+    subject: `${employeeName} has resigned — last day ${lastDay}`,
+    text: `Hi ${firstName}, ${employeeName} has resigned. Their notice period has started and their last day is ${lastDay}.${reason ? ` Reason: ${reason}` : ''} Send them an offboarding checklist: ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      <p><strong>${esc(employeeName)}</strong> has resigned. Their notice period has started and their last day is <strong>${esc(lastDay)}</strong>.</p>
+      ${reason ? `<p style="padding:10px 14px;background:#f8fafc;border-radius:8px">${esc(reason)}</p>` : ''}
+      <p>Send them an offboarding checklist (handover note, documents, company assets) so everything is done before they go.</p>
+      ${button(link, 'Send the checklist')}`),
+  };
+}
+
+export function offboardingChecklistEmail({ firstName, businessName, itemCount, deadline, termination, link }) {
+  return {
+    subject: termination ? `Your exit from ${businessName} — please complete these steps` : `Your offboarding checklist from ${businessName}`,
+    text: `Hi ${firstName}, ${termination ? `your employment with ${businessName} is ending.` : `thank you for your time at ${businessName}.`} Please complete your ${itemCount} offboarding steps by ${deadline}. ${link}`,
+    html: layout(`
+      <p>Hi ${esc(firstName)},</p>
+      ${termination
+        ? `<p>Your employment with <strong>${esc(businessName)}</strong> is ending. To close things off properly, please complete the <strong>${itemCount} steps</strong> below by <strong>${esc(deadline)}</strong>.</p>`
+        : `<p>Thank you for your time at <strong>${esc(businessName)}</strong>. Before you go, please complete the <strong>${itemCount} offboarding steps</strong> by <strong>${esc(deadline)}</strong> — things like your handover note and returning company items.</p>`}
+      <p>If anything is unclear, speak to HR.</p>
+      ${button(link, 'Open my checklist')}`),
+  };
+}

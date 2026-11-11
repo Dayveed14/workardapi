@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { requireAuth, requireFeature } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import * as onboardingController from '../controllers/onboardingController.js';
-import { templateSchema, startSchema, listSchema, itemDoneSchema, addItemSchema } from '../validators/onboardingSchemas.js';
+import { templateSchema, templateListSchema, startSchema, listSchema, itemDoneSchema, addItemSchema } from '../validators/onboardingSchemas.js';
 
 // HR / owner manage everything (onboarding.manage); a new joiner can open and tick their own.
 // Those rules are checked in onboardingService. Onboarding is part of HR, on every plan.
@@ -10,7 +10,7 @@ const router = Router();
 router.use(requireAuth, requireFeature('hr'));
 
 // Fixed paths first (before "/:id")
-router.get('/templates', onboardingController.listTemplates);
+router.get('/templates', validate(templateListSchema, 'query'), onboardingController.listTemplates); // ?kind=offboarding
 router.post('/templates', validate(templateSchema), onboardingController.createTemplate);
 router.get('/templates/:id', onboardingController.getTemplate);
 router.put('/templates/:id', validate(templateSchema), onboardingController.updateTemplate);

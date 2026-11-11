@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS organizations (
   size        VARCHAR(20)  NULL,
   currency    CHAR(3)      NOT NULL DEFAULT 'NGN',
   plan        ENUM('free','business','pro') NOT NULL DEFAULT 'free',
+  notice_days       SMALLINT UNSIGNED NOT NULL DEFAULT 30, -- resignation notice period
   suspended_at      DATETIME NULL,          -- suspended by a Workard super admin (nobody can use it)
   suspended_reason  VARCHAR(255) NULL,
   created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -635,6 +636,14 @@ CREATE TABLE IF NOT EXISTS task_comments (
   CONSTRAINT fk_comment_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- People tagged in a comment (@Name). Only they are notified about that comment.
+CREATE TABLE IF NOT EXISTS task_comment_mentions (
+  comment_id  BIGINT UNSIGNED NOT NULL,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (comment_id, user_id),
+  CONSTRAINT fk_mention_comment FOREIGN KEY (comment_id) REFERENCES task_comments(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS task_attachments (
   id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   task_id        BIGINT UNSIGNED NOT NULL,
@@ -810,7 +819,8 @@ CREATE TABLE IF NOT EXISTS onboarding_templates (
   organization_id  BIGINT UNSIGNED NOT NULL,
   name             VARCHAR(120) NOT NULL,
   description      VARCHAR(255) NULL,
-  suits            ENUM('everyone','staff','managers') NOT NULL DEFAULT 'everyone',
+  kind             ENUM('onboarding','offboarding') NOT NULL DEFAULT 'onboarding',
+  suits            ENUM('everyone','staff','managers','resignation','termination') NOT NULL DEFAULT 'everyone',
   is_active        TINYINT(1) NOT NULL DEFAULT 1,
   created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_obt_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
@@ -824,6 +834,7 @@ CREATE TABLE IF NOT EXISTS onboarding_template_items (
   description  VARCHAR(500) NULL,
   owner        ENUM('new_joiner','hr') NOT NULL,
   due_day      SMALLINT NOT NULL DEFAULT 0,       -- days after the start date (0 = first day)
+  asks_for_note TINYINT(1) NOT NULL DEFAULT 0,    -- offboarding: the leaver writes something (e.g. a handover note)
   sort_order   INT NOT NULL DEFAULT 0,
   CONSTRAINT fk_obti_template FOREIGN KEY (template_id) REFERENCES onboarding_templates(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
@@ -859,6 +870,54 @@ CREATE TABLE IF NOT EXISTS onboarding_items (
   done_at         DATETIME NULL,
   done_by         BIGINT UNSIGNED NULL,           -- user id
   CONSTRAINT fk_obi_onboarding FOREIGN KEY (onboarding_id) REFERENCES onboardings(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- OFFBOARDING — someone leaving
+--   resignation: the employee resigns (Requests → Resign) → the notice period starts
+--                (organizations.notice_days, default 30) → HR sends a checklist
+--   termination: HR exits someone with a checklist due within 24 hours
+--   They stop being able to log in at ends_at (automatically) or when HR clicks "Exit now".
+-- Checklists come from onboarding_templates with kind = 'offboarding'.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS offboardings (
+  id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id     BIGINT UNSIGNED NOT NULL,
+  employee_id         BIGINT UNSIGNED NOT NULL,
+  exit_type           ENUM('resignation','termination') NOT NULL,
+  reason              VARCHAR(1000) NULL,
+  started_by          BIGINT UNSIGNED NULL,          -- user id (the employee who resigned, or HR)
+  by_employee         TINYINT(1) NOT NULL DEFAULT 0, -- 1 = they resigned themselves
+  notice_start        DATETIME NOT NULL,
+  last_day            DATE NOT NULL,
+  ends_at             DATETIME NOT NULL,             -- when their access ends
+  template_name       VARCHAR(120) NULL,             -- NULL until HR sends a checklist
+  checklist_sent_at   DATETIME NULL,
+  checklist_done_at   DATETIME NULL,
+  status              ENUM('notice','in_progress','exited','withdrawn','cancelled') NOT NULL DEFAULT 'notice',
+  exited_at           DATETIME NULL,
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  active_key          TINYINT NULL DEFAULT 1,        -- one live offboarding per person
+  UNIQUE KEY uq_offboarding_active (employee_id, active_key),
+  KEY idx_offboarding_org (organization_id, status),
+  KEY idx_offboarding_end (status, ends_at),
+  CONSTRAINT fk_off_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_off_emp FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS offboarding_items (
+  id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  offboarding_id    BIGINT UNSIGNED NOT NULL,
+  title             VARCHAR(200) NOT NULL,
+  description       VARCHAR(500) NULL,
+  owner             ENUM('employee','hr') NOT NULL,
+  due_at            DATETIME NULL,
+  asks_for_note     TINYINT(1) NOT NULL DEFAULT 0,
+  note              TEXT NULL,                       -- e.g. the handover note, or "returned laptop to Tunde"
+  sort_order        INT NOT NULL DEFAULT 0,
+  done_at           DATETIME NULL,
+  done_by           BIGINT UNSIGNED NULL,
+  CONSTRAINT fk_offi_off FOREIGN KEY (offboarding_id) REFERENCES offboardings(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- ============================================================

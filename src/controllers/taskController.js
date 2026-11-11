@@ -59,7 +59,7 @@ export const removeChecklistItem = asyncHandler(async (req, res) => {
 
 // POST /api/tasks/:id/comments
 export const addComment = asyncHandler(async (req, res) => {
-  res.status(201).json(await taskService.addComment(req.auth, req.params.id, req.body.body));
+  res.status(201).json(await taskService.addComment(req.auth, req.params.id, req.body));
 });
 
 // POST /api/tasks/:id/attachments  (multipart, field "file")

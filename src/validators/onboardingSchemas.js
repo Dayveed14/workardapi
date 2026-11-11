@@ -6,7 +6,8 @@ const owner = z.enum(['new_joiner', 'hr'], { errorMap: () => ({ message: 'Choose
 export const templateSchema = z.object({
   name: z.string({ required_error: 'Name the checklist' }).trim().min(2, 'Name the checklist').max(120),
   description: optionalText(255),
-  suits: z.enum(['everyone', 'staff', 'managers']).default('everyone'),
+  kind: z.enum(['onboarding', 'offboarding']).default('onboarding'),
+  suits: z.enum(['everyone', 'staff', 'managers', 'resignation', 'termination']).default('everyone'),
   items: z
     .array(
       z.object({
@@ -14,6 +15,7 @@ export const templateSchema = z.object({
         description: optionalText(500),
         owner,
         dueDay: z.coerce.number().int().min(0, 'Use 0 or more days').max(365).default(0),
+        asksForNote: z.boolean().default(false),
       })
     )
     .min(1, 'Add at least one item')
@@ -25,6 +27,8 @@ export const startSchema = z.object({
   templateId: requiredId('Choose a checklist'),
   startDate: optionalDate,
 });
+
+export const templateListSchema = z.object({ kind: z.enum(['onboarding', 'offboarding']).default('onboarding') });
 
 export const listSchema = z.object({
   status: z.preprocess((v) => (v === '' ? undefined : v), z.enum(['in_progress', 'completed', 'cancelled']).optional()),

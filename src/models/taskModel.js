@@ -262,6 +262,7 @@ export async function removeChecklistItem(itemId, db = pool) {
 }
 
 // ---------- Comments ----------
+// Each comment comes with `mentions`: the people tagged in it (@Name) — [{ user_id, name }]
 export async function listComments(taskId, db = pool) {
   const [rows] = await db.query(
     `SELECT tc.*, u.full_name AS author_name
@@ -269,11 +270,21 @@ export async function listComments(taskId, db = pool) {
       WHERE tc.task_id = ? ORDER BY tc.created_at, tc.id`,
     [taskId]
   );
-  return rows;
+  if (!rows.length) return rows;
+  const [mentions] = await db.query(
+    `SELECT m.comment_id, m.user_id, u.full_name AS name
+       FROM task_comment_mentions m JOIN users u ON u.id = m.user_id
+      WHERE m.comment_id IN (?)`,
+    [rows.map((r) => r.id)]
+  );
+  return rows.map((r) => ({ ...r, mentions: mentions.filter((m) => m.comment_id === r.id).map(({ user_id, name }) => ({ user_id, name })) }));
 }
 
-export async function addComment(taskId, userId, body, db = pool) {
+export async function addComment(taskId, userId, body, mentionUserIds = [], db = pool) {
   const [result] = await db.query('INSERT INTO task_comments (task_id, user_id, body) VALUES (?, ?, ?)', [taskId, userId, body]);
+  for (const id of mentionUserIds) {
+    await db.query('INSERT IGNORE INTO task_comment_mentions (comment_id, user_id) VALUES (?, ?)', [result.insertId, id]);
+  }
   return result.insertId;
 }
 

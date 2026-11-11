@@ -62,4 +62,10 @@ export async function runUpgrades(conn) {
   await addColumn(conn, 'organizations', 'suspended_at', 'DATETIME NULL');
   await addColumn(conn, 'organizations', 'suspended_reason', 'VARCHAR(255) NULL');
   await conn.query("ALTER TABLE otp_codes MODIFY purpose ENUM('signup','login','reset','admin') NOT NULL");
+
+  // Offboarding: checklists share the onboarding tables (kind), notice period per company
+  await addColumn(conn, 'onboarding_templates', 'kind', "ENUM('onboarding','offboarding') NOT NULL DEFAULT 'onboarding' AFTER description");
+  await conn.query("ALTER TABLE onboarding_templates MODIFY suits ENUM('everyone','staff','managers','resignation','termination') NOT NULL DEFAULT 'everyone'");
+  await addColumn(conn, 'onboarding_template_items', 'asks_for_note', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER due_day');
+  await addColumn(conn, 'organizations', 'notice_days', 'SMALLINT UNSIGNED NOT NULL DEFAULT 30');
 }

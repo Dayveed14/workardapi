@@ -1379,6 +1379,21 @@ try {
   r = await staff('POST', `/tasks/${sharedTask}/comments`, { body: 'Done 8 so far' });
   r = await sup('GET', '/notifications');
   check('comments reach everyone on the task', r.data.items.some((n) => n.type === 'task.comment' && /Chidi Eze commented/.test(n.title)), r.data.items.map((n) => n.title));
+  // @mentions: only the tagged person is notified; everyone still sees the comment
+  r = await owner('GET', `/tasks/${sharedTask}`);
+  const chidiUser = r.data.mentionable.find((p) => p.name === 'Chidi Eze');
+  check('people on the task (and whoever set it) can be tagged', r.data.mentionable.length >= 2 && chidiUser, r.data.mentionable);
+  const supBefore = (await sup('GET', '/notifications')).data.items.length;
+  r = await owner('POST', `/tasks/${sharedTask}/comments`, { body: `@Chidi Eze please share the photos`, mentionUserIds: [chidiUser.userId, 999999] });
+  const tagged = r.data[r.data.length - 1];
+  check('a comment with a tag (strangers ignored)', r.status === 201 && tagged.mentions.length === 1 && tagged.mentions[0].user_id === chidiUser.userId, tagged);
+  r = await staff('GET', '/notifications');
+  check('the tagged person gets “mentioned you”', r.data.items.some((n) => n.type === 'task.mention' && /mentioned you on “Visit 20 stores/.test(n.title)), r.data.items.map((n) => n.title));
+  r = await sup('GET', '/notifications');
+  check('…the others on the task are NOT notified', r.data.items.length === supBefore, r.data.items.slice(0, 3).map((n) => n.title));
+  r = await sup('GET', `/tasks/${sharedTask}`);
+  check('…but they can still read it', r.data.comments.some((c) => c.body.includes('please share the photos') && c.mentions.length === 1));
+
   r = await sup('POST', '/tasks', { title: 'Print flyers', projectId, assigneeIds: [staffId], checklist: [] });
   await staff('PATCH', `/tasks/${r.data.id}/status`, { status: 'done' });
   r = await staff('GET', `/projects/${projectId}`);
@@ -1516,6 +1531,77 @@ try {
   r = await staff('GET', '/auth/me');
   check('exited employee loses access', r.status === 401, r.data);
 
+
+
+  console.log('\nOffboarding (resignation, 24-hour exit)');
+  r = await sup('GET', '/offboarding/mine');
+  check('notice period defaults to 30 days', r.data.noticeDays === 30 && r.data.offboarding === null, r.data);
+  r = await sup('POST', '/offboarding/resign', { reason: 'Relocating to Abuja' });
+  const resignId = r.data.id;
+  check('an employee resigns: 30-day notice starts', r.status === 201 && r.data.status === 'notice' && r.data.last_day === addDaysIso(todayIso, 30) && r.data.isLeaver, r.data);
+  r = await sup('POST', '/offboarding/resign', {});
+  check('…only once', r.status === 409);
+  r = await hr('GET', '/notifications');
+  check('HR is told (bell + email)', r.data.items.some((n) => n.type === 'offboarding.resigned' && /has resigned/.test(n.title)) && /has resigned/.test(lastEmail(hrEmail)?.subject || ''), r.data.items.map((n) => n.title));
+  r = await hr('GET', '/onboarding/templates?kind=offboarding');
+  const resignTpl = r.data.find((t) => t.suits === 'resignation');
+  const quickTpl = r.data.find((t) => t.suits === 'termination');
+  check('two starter offboarding checklists', resignTpl && quickTpl, r.data.map((t) => t.name));
+  r = await hr('GET', '/onboarding/templates');
+  check('…kept apart from the onboarding ones', !r.data.some((t) => t.id === resignTpl.id));
+  r = await hr('POST', `/offboarding/${resignId}/checklist`, { templateId: resignTpl.id });
+  const handover = r.data.items?.find((i) => /handover/i.test(i.title));
+  check('HR sends the offboarding checklist', r.status === 200 && r.data.status === 'in_progress' && r.data.items.length >= 5 && handover?.asks_for_note === 1 && r.data.items.every((i) => i.due_at <= r.data.ends_at), r.data);
+  check('…the leaver is told (bell + email)', /offboarding checklist/i.test(lastEmail(supEmail)?.subject || ''), lastEmail(supEmail)?.subject);
+  r = await sup('PATCH', `/offboarding/items/${handover.id}`, { done: true });
+  check('the handover note needs writing', r.status === 422 && r.data.errors?.note, r.data);
+  r = await sup('PATCH', `/offboarding/items/${handover.id}`, { done: true, note: 'Clients list is in the shared drive; Tunde takes Lekki.' });
+  check('…tick it with the note', r.data.items.find((i) => i.id === handover.id).done_at && /Tunde takes Lekki/.test(r.data.items.find((i) => i.id === handover.id).note));
+  const hrOffItem = r.data.items.find((i) => i.owner === 'hr');
+  r = await sup('PATCH', `/offboarding/items/${hrOffItem.id}`, { done: true });
+  check('the leaver can’t tick HR’s items', r.status === 403);
+  r = await freeCo('GET', `/offboarding/${resignId}`);
+  check('others can’t see someone’s offboarding', r.status === 404 || r.status === 403);
+  r = await sup('POST', `/offboarding/${resignId}/withdraw`);
+  check('the employee can withdraw their resignation', r.data.status === 'withdrawn', r.data);
+  r = await hr('GET', '/notifications');
+  check('…and HR is told', r.data.items.some((n) => n.type === 'offboarding.withdrawn'));
+
+  r = await owner('POST', '/employees', { firstName: 'Temi', lastName: 'Ade', email: `temi${stamp}@test.ng`, sendInvite: false });
+  const temiId = r.data.employee.id;
+  r = await sup('POST', '/offboarding', { employeeId: temiId, exitType: 'termination', templateId: quickTpl.id });
+  check('employees can’t exit people', r.status === 403);
+  r = await hr('POST', '/offboarding', { employeeId: temiId, exitType: 'termination', templateId: 999999 });
+  check('a wrong checklist is refused before anything starts', r.status === 422, r.data);
+  r = await hr('POST', '/offboarding', { employeeId: temiId, exitType: 'termination', templateId: quickTpl.id, reason: 'End of contract' });
+  const termId = r.data.id;
+  const hoursLeft = (new Date(r.data.ends_at.replace(' ', 'T')) - Date.now()) / 3600_000;
+  check('HR exits someone with a 24-hour checklist', r.status === 201 && r.data.exit_type === 'termination' && hoursLeft > 23 && hoursLeft <= 24.01 && r.data.items.length >= 4, [r.data.status, hoursLeft]);
+  check('24-hour exit: every step is due when the 24 hours end', r.data.items.every((i) => i.due_at === r.data.ends_at), r.data.items.map((i) => i.due_at));
+  for (const item of r.data.items) r = await hr('PATCH', `/offboarding/items/${item.id}`, { done: true, note: item.asks_for_note ? 'Done with HR' : undefined });
+  check('everything ticked → checklist complete', r.data.checklist_done_at, r.data);
+  await pool.query('UPDATE offboardings SET ends_at = NOW() - INTERVAL 1 MINUTE WHERE id = ?', [termId]);
+  const { processEndings } = await import('../src/services/offboardingService.js');
+  await processEndings();
+  r = await hr('GET', `/employees/${temiId}`);
+  check('when the time is up they leave automatically', r.data.status === 'exited', r.data.status);
+  r = await hr('GET', `/offboarding/${termId}`);
+  check('…and the offboarding shows “exited”', r.data.status === 'exited' && r.data.exited_at, r.data.status);
+
+  r = await owner('POST', '/employees', { firstName: 'Bayo', lastName: 'Lawal', email: `bayo${stamp}@test.ng`, sendInvite: false });
+  const bayoId = r.data.employee.id;
+  r = await hr('POST', '/offboarding', { employeeId: bayoId, exitType: 'resignation', lastDay: addDaysIso(todayIso, 10) });
+  check('HR records a resignation they received (their own last day)', r.data.status === 'notice' && r.data.last_day === addDaysIso(todayIso, 10) && !r.data.template_name, r.data);
+  r = await hr('PATCH', `/offboarding/${r.data.id}/last-day`, { lastDay: addDaysIso(todayIso, 5) });
+  check('change the last day', r.data.last_day === addDaysIso(todayIso, 5));
+  r = await hr('POST', `/offboarding/${r.data.id}/exit-now`);
+  check('“Exit now” ends it today', r.data.status === 'exited' && (await hr('GET', `/employees/${bayoId}`)).data.status === 'exited');
+
+  r = await sup('PUT', '/offboarding/settings', { noticeDays: 14 });
+  check('only HR changes the notice period', r.status === 403);
+  r = await hr('PUT', '/offboarding/settings', { noticeDays: 14 });
+  check('HR sets the notice period (e.g. 14 days)', r.data.noticeDays === 14 && (await sup('GET', '/offboarding/mine')).data.noticeDays === 14);
+  await hr('PUT', '/offboarding/settings', { noticeDays: 30 });
 
   console.log('\nWorkard super admin');
   const { addAdmin } = await import('../src/services/adminAuthService.js');

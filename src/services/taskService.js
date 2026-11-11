@@ -170,7 +170,14 @@ export async function getTask(auth, id) {
     taskModel.listAttachments(id),
     canManage(auth, task),
   ]);
-  return { ...task, checklist, comments, attachments, canManage: manage, canWork: manage || isOnTask(auth, task) };
+  return { ...task, checklist, comments, attachments, mentionable: mentionable(task), canManage: manage, canWork: manage || isOnTask(auth, task) };
+}
+
+// Who can be tagged in a comment (@Name): the people on the task and whoever set it
+function mentionable(task) {
+  const people = task.assignees.filter((a) => a.user_id).map((a) => ({ userId: a.user_id, name: `${a.first_name} ${a.last_name}` }));
+  if (task.created_by && !people.some((p) => p.userId === task.created_by)) people.push({ userId: task.created_by, name: task.created_by_name });
+  return people;
 }
 
 // The people asked for: assigneeIds (several) or assignedEmployeeId (one); nobody → yourself
@@ -278,18 +285,33 @@ export async function removeChecklistItem(auth, itemId) {
   return taskModel.listChecklist(task.id);
 }
 
-export async function addComment(auth, id, body) {
+// Comments are seen by everyone who can see the task.
+// Who gets a NOTIFICATION:
+//   no one tagged  → everyone on the task + whoever set it
+//   @tagged people → ONLY them ("Ada mentioned you on …") — the others still see the comment
+export async function addComment(auth, id, { body, mentionUserIds = [] }) {
   const task = await getVisibleTask(auth, id); // anyone who can see the task can comment
-  await taskModel.addComment(id, auth.userId, body);
-  // Everyone on the task and whoever set it hears about it
-  const userIds = [...task.assignees.map((a) => a.user_id), task.created_by];
-  await notify(auth.orgId, userIds, {
-    type: 'task.comment',
-    title: `${auth.userName} commented on “${task.title}”`,
-    body: body.slice(0, 160),
-    link: `/tasks/${task.id}`,
-    actorUserId: auth.userId,
-  });
+  const allowed = new Set(mentionable(task).map((p) => p.userId));
+  const tagged = [...new Set(mentionUserIds)].filter((uid) => allowed.has(uid) && uid !== auth.userId);
+  await taskModel.addComment(id, auth.userId, body, tagged);
+
+  if (tagged.length) {
+    await notify(auth.orgId, tagged, {
+      type: 'task.mention',
+      title: `${auth.userName} mentioned you on “${task.title}”`,
+      body: body.slice(0, 160),
+      link: `/tasks/${task.id}`,
+      actorUserId: auth.userId,
+    });
+  } else {
+    await notify(auth.orgId, [...task.assignees.map((a) => a.user_id), task.created_by], {
+      type: 'task.comment',
+      title: `${auth.userName} commented on “${task.title}”`,
+      body: body.slice(0, 160),
+      link: `/tasks/${task.id}`,
+      actorUserId: auth.userId,
+    });
+  }
   return taskModel.listComments(id);
 }
 

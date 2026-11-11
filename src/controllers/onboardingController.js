@@ -3,7 +3,7 @@ import * as onboardingService from '../services/onboardingService.js';
 
 // ---------- Checklists ----------
 export const listTemplates = asyncHandler(async (req, res) => {
-  res.json(await onboardingService.listTemplates(req.auth));
+  res.json(await onboardingService.listTemplates(req.auth, req.validatedQuery.kind));
 });
 export const getTemplate = asyncHandler(async (req, res) => {
   res.json(await onboardingService.getTemplate(req.auth, req.params.id));

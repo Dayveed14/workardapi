@@ -1,3 +1,4 @@
+import { processEndings } from './offboardingService.js';
 import * as blogModel from '../models/blogModel.js';
 import { requestRebuild } from './deployHookService.js';
 import { deleteOldRead } from '../models/notificationModel.js';
@@ -68,6 +69,8 @@ export async function runDailyJobs(now = new Date()) {
   result.recurringCreated = await generateRecurringTasks(today);
   // Flagged clock-ins nobody explained within 24 hours go to managers
   result.flagsEscalated = await escalateUnansweredFlags(now);
+  // People whose last day (or 24-hour exit) has passed leave: their log-in stops
+  result.offboardingsEnded = await processEndings();
   // Read notifications older than 90 days are cleared
   result.notificationsCleared = await deleteOldRead(90);
   // Scheduled blog posts that went live since the last run → rebuild the website

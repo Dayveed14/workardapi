@@ -1,26 +1,29 @@
 import { pool } from '../config/db.js';
-import { DEFAULT_ONBOARDING_TEMPLATES } from '../config/permissions.js';
+import { DEFAULT_ONBOARDING_TEMPLATES, DEFAULT_OFFBOARDING_TEMPLATES } from '../config/permissions.js';
 
 // ---------- Templates (reusable checklists) ----------
-// Adds the two starter checklists if the organisation has none yet
+// kind: 'onboarding' (someone joining) or 'offboarding' (someone leaving) — same tables.
+// Adds the starter checklists of each kind the organisation has none of yet
 export async function ensureDefaults(orgId, db = pool) {
-  const [rows] = await db.query('SELECT COUNT(*) AS n FROM onboarding_templates WHERE organization_id = ?', [orgId]);
-  if (Number(rows[0].n) > 0) return;
-  for (const t of DEFAULT_ONBOARDING_TEMPLATES) {
-    const id = await createTemplate(orgId, t, db);
-    await replaceTemplateItems(id, t.items.map((i) => ({ ...i, dueDay: i.day })), db);
+  for (const [kind, defaults] of [['onboarding', DEFAULT_ONBOARDING_TEMPLATES], ['offboarding', DEFAULT_OFFBOARDING_TEMPLATES]]) {
+    const [rows] = await db.query('SELECT COUNT(*) AS n FROM onboarding_templates WHERE organization_id = ? AND kind = ?', [orgId, kind]);
+    if (Number(rows[0].n) > 0) continue;
+    for (const t of defaults) {
+      const id = await createTemplate(orgId, { ...t, kind }, db);
+      await replaceTemplateItems(id, t.items.map((i) => ({ ...i, dueDay: i.day })), db);
+    }
   }
 }
 
-export async function listTemplates(orgId, db = pool) {
+export async function listTemplates(orgId, kind = 'onboarding', db = pool) {
   const [rows] = await db.query(
     `SELECT t.*,
             (SELECT COUNT(*) FROM onboarding_template_items i WHERE i.template_id = t.id AND i.owner = 'new_joiner') AS joiner_items,
             (SELECT COUNT(*) FROM onboarding_template_items i WHERE i.template_id = t.id AND i.owner = 'hr') AS hr_items
        FROM onboarding_templates t
-      WHERE t.organization_id = ? AND t.is_active = 1
+      WHERE t.organization_id = ? AND t.kind = ? AND t.is_active = 1
       ORDER BY t.name`,
-    [orgId]
+    [orgId, kind]
   );
   return rows;
 }
@@ -35,10 +38,10 @@ export async function listTemplateItems(templateId, db = pool) {
   return rows;
 }
 
-export async function createTemplate(orgId, { name, description, suits }, db = pool) {
+export async function createTemplate(orgId, { name, description, suits, kind = 'onboarding' }, db = pool) {
   const [result] = await db.query(
-    'INSERT INTO onboarding_templates (organization_id, name, description, suits) VALUES (?, ?, ?, ?)',
-    [orgId, name, description || null, suits || 'everyone']
+    'INSERT INTO onboarding_templates (organization_id, name, description, kind, suits) VALUES (?, ?, ?, ?, ?)',
+    [orgId, name, description || null, kind, suits || 'everyone']
   );
   return result.insertId;
 }
@@ -60,8 +63,8 @@ export async function replaceTemplateItems(templateId, items, db = pool) {
   for (const item of items) {
     order += 1;
     await db.query(
-      'INSERT INTO onboarding_template_items (template_id, title, description, owner, due_day, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
-      [templateId, item.title, item.description || null, item.owner, item.dueDay || 0, order]
+      'INSERT INTO onboarding_template_items (template_id, title, description, owner, due_day, asks_for_note, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [templateId, item.title, item.description || null, item.owner, item.dueDay || 0, item.asksForNote ? 1 : 0, order]
     );
   }
 }
