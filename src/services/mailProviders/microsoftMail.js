@@ -1,5 +1,5 @@
 import { env } from '../../config/env.js';
-import { call, readIdToken } from './common.js';
+import { call, readIdToken, MailProviderError, MISSING_PERMISSION } from './common.js';
 
 // ============================================================
 // OUTLOOK — Microsoft sign-in + Microsoft Graph. Same job names as googleMail.js (see common.js).
@@ -51,6 +51,7 @@ export async function exchangeCode({ code, codeVerifier }) {
   const me = await call(api('?$select=mail,userPrincipalName,displayName'), { token: data.access_token });
   const idToken = readIdToken(data.id_token);
   const scopes = data.scope || '';
+  if (!/(^|[\s/])mail\.send(\s|$)/i.test(scopes)) throw new MailProviderError(MISSING_PERMISSION);
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,

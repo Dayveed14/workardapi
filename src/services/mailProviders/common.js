@@ -24,6 +24,9 @@ export class MailProviderError extends Error {
   }
 }
 
+export const MISSING_PERMISSION =
+  'Workard was not given permission to send email from this mailbox. Please connect again and, on the Google / Microsoft screen, tick the box that lets Workard send email for you.';
+
 // fetch + JSON + friendly errors
 export async function call(url, { method = 'GET', token, json, form, headers = {} } = {}) {
   const init = { method, headers: { ...headers } };
@@ -50,6 +53,11 @@ export async function call(url, { method = 'GET', token, json, form, headers = {
   }
   if (!res.ok) {
     const reason = data.error_description || data.error?.message || (typeof data.error === 'string' ? data.error : '') || `HTTP ${res.status}`;
+    // Missing permission: the person connected without ticking "send email" (Google lets them untick it)
+    const missingPermission = res.status === 403 && /insufficient.*scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT|ErrorAccessDenied/i.test(text);
+    if (missingPermission) {
+      throw new MailProviderError(MISSING_PERMISSION, { status: 401, needsReconnect: true });
+    }
     const needsReconnect = res.status === 401 || data.error === 'invalid_grant';
     throw new MailProviderError(needsReconnect ? 'Your email connection has expired. Please reconnect your mailbox.' : `Email provider: ${reason}`, {
       status: needsReconnect ? 401 : 502,

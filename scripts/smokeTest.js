@@ -1622,13 +1622,14 @@ try {
 
   console.log('\nMail: your own Gmail / Outlook');
   // "Visit" the sign-in link like a browser, let the fake provider say Allow, follow it back to Workard
-  async function connectMail(who, provider, email, { hd, withInbox = false, deny = false } = {}) {
+  async function connectMail(who, provider, email, { hd, withInbox = false, deny = false, untick = false } = {}) {
     const start = await who('POST', `/mail/connect/${provider}`, { withInbox });
     if (start.status !== 200) return { start };
     const url = new URL(start.data.url);
     url.searchParams.set('login_hint', email);
     if (hd) url.searchParams.set('fake_hd', hd);
     if (deny) url.searchParams.set('fake_deny', '1');
+    if (untick) url.searchParams.set('fake_untick', '1');
     const atProvider = await fetch(url, { redirect: 'manual' });
     const callback = new URL(atProvider.headers.get('location'));
     const callbackPath = `${callback.pathname.replace(/^\/api/, '')}${callback.search}`;
@@ -1652,6 +1653,16 @@ try {
   const ownerGmail = `ada.${stamp}@gmail.com`;
   let m = await connectMail(owner, 'google', ownerGmail, { deny: true });
   check('cancelling at Google comes back with a message', /mailError=/.test(m.location) && /cancelled/.test(decodeURIComponent(m.location)), m.location);
+  m = await connectMail(owner, 'google', ownerGmail, { untick: true });
+  r = await owner('GET', '/mail/account');
+  check('leaving “send email” unticked at Google: not connected, told to tick the box', /mailError=/.test(m.location) && /tick the box/.test(new URL(m.location).searchParams.get('mailError') || '') && r.data.account === null, { location: m.location, account: r.data.account });
+  // An older connection made without the tick: sending says reconnect (not a raw Google error)
+  await connectMail(owner, 'google', ownerGmail);
+  fakeMail.state.dropSendPermission();
+  r = await owner('POST', '/mail/send', mailForm({ to: [{ email: 'x@y.com' }], subject: 'Hi', html: '<p>Hi</p>', requestId: `mail-${stamp}-noperm` }));
+  const noPerm = await owner('GET', '/mail/account');
+  check('…a connection without send permission asks to reconnect and is marked “needs reconnect”', r.status === 409 && /tick the box/.test(r.data.message) && noPerm.data.account?.status === 'needs_reconnect', { send: r.data, account: noPerm.data.account });
+  fakeMail.state.noSend = false;
   m = await connectMail(owner, 'google', ownerGmail);
   check('connect personal Gmail → back to /mail?connected=google', /\/mail\?connected=google/.test(m.location), m.location);
   check('Gmail asked only to SEND (no inbox permission for personal Gmail)', !/gmail\.modify/.test(m.start.data.url) && /gmail\.send/.test(m.start.data.url) && /code_challenge=/.test(m.start.data.url), m.start.data.url);

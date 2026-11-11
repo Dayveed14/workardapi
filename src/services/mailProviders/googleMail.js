@@ -1,6 +1,6 @@
 import { env } from '../../config/env.js';
 import { buildMime, toBase64Url, fromBase64Url } from '../../utils/mime.js';
-import { call, readIdToken, parseAddressList, MailProviderError } from './common.js';
+import { call, readIdToken, parseAddressList, MailProviderError, MISSING_PERMISSION } from './common.js';
 
 // ============================================================
 // GMAIL — Google OAuth + the Gmail API. Same job names as microsoftMail.js (see common.js).
@@ -43,6 +43,12 @@ export async function exchangeCode({ code, codeVerifier }) {
   if (!data.refresh_token) throw new MailProviderError('Google did not give Workard lasting access. Please try connecting again.');
   const profile = readIdToken(data.id_token);
   const scopes = data.scope || '';
+  // Google shows "Send email on your behalf" as a tick box the person can leave unticked.
+  // Without it the mailbox is useless, so refuse (and hand the access back) instead of saving it.
+  if (!scopes.split(' ').includes(SEND)) {
+    await revoke(data.refresh_token).catch(() => {});
+    throw new MailProviderError(MISSING_PERMISSION);
+  }
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,

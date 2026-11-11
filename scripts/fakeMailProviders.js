@@ -46,7 +46,8 @@ export function startFakeMail() {
         email: String(req.query.login_hint || 'someone@gmail.com').toLowerCase(),
         name: req.query.fake_name || 'Test Person',
         hd: req.query.fake_hd || null,
-        scope: String(req.query.scope || ''),
+        // fake_untick: the person left "send email" unticked on the consent screen
+        scope: String(req.query.scope || '').split(' ').filter((x) => !(req.query.fake_untick && /gmail\.send|Mail\.Send/.test(x))).join(' '),
         challenge: req.query.code_challenge,
       };
       const back = new URL(req.query.redirect_uri);
@@ -126,7 +127,13 @@ export function startFakeMail() {
   });
   const gmailMessage = (m) => ({ id: m.id, threadId: m.threadId, labelIds: m.labels, snippet: (m.html || '').replace(/<[^>]+>/g, '').slice(0, 80), internalDate: String(m.date), payload: gmailPayload(m) });
 
+  // test helper: take "send" away from everything already issued (an old connection made without the tick)
+  s.dropSendPermission = () => {
+    for (const r of Object.values(s.refresh)) r.scope = r.scope.split(' ').filter((x) => !/gmail\.send|Mail\.Send/.test(x)).join(' ');
+    s.noSend = true;
+  };
   app.post('/gmail/v1/users/me/messages/send', authed, (req, res) => {
+    if (s.noSend) return res.status(403).json({ error: { code: 403, message: 'Request had insufficient authentication scopes.', status: 'PERMISSION_DENIED', details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }] } });
     const email = who(req);
     const raw = decodeRaw(req.body.raw);
     const box = gmailBox(email);
