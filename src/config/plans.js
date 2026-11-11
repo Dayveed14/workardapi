@@ -47,7 +47,7 @@ export const PLANS = {
     name: 'Business',
     // ₦35,000 a month, or ₦32,999 a month paid yearly (₦395,988)
     prices: { monthly: 3_500_000, yearly: 39_598_800 },
-    features: ['hr', 'tasks', 'reviews', 'payroll', 'crm', 'invoices', 'finance'],
+    features: ['hr', 'tasks', 'reviews', 'payroll', 'crm', 'invoices', 'finance', 'mail'],
     maxEmployees: null,
     maxBranches: 3,
     customRoles: false,
@@ -57,7 +57,7 @@ export const PLANS = {
     name: 'Enterprise',
     // ₦55,000 a month, or ₦53,999 a month paid yearly (₦647,988)
     prices: { monthly: 5_500_000, yearly: 64_798_800 },
-    features: ['hr', 'tasks', 'reviews', 'payroll', 'crm', 'invoices', 'finance', 'calls'],
+    features: ['hr', 'tasks', 'reviews', 'payroll', 'crm', 'invoices', 'finance', 'mail', 'calls'],
     maxEmployees: null,
     maxBranches: null,
     customRoles: true,
@@ -75,5 +75,6 @@ export const FEATURE_NAMES = {
   crm: 'Customers (CRM)',
   invoices: 'Invoicing',
   finance: 'Finance',
+  mail: 'Email',
   calls: 'Cloud phone',
 };

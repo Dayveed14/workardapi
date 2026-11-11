@@ -177,3 +177,14 @@ export async function countByDepartment(orgId, scope, db = pool) {
   );
   return rows.map((r) => ({ name: r.name, total: Number(r.total) }));
 }
+
+// Active staff who have an email address (Mail → To/Cc suggestions)
+export async function emailOptions(orgId, db = pool) {
+  const [rows] = await db.query(
+    `SELECT id, first_name, last_name, email, job_title FROM employees
+      WHERE organization_id = ? AND status = 'active' AND email IS NOT NULL AND email <> ''
+      ORDER BY first_name, last_name`,
+    [orgId]
+  );
+  return rows;
+}

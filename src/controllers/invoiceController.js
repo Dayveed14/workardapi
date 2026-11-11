@@ -29,6 +29,11 @@ export const send = asyncHandler(async (req, res) => {
   res.json(await invoiceService.sendInvoice(req.auth, req.params.id, req.body));
 });
 
+// GET /api/invoices/:id/email-draft — a ready-to-edit email for sending from my own Gmail/Outlook
+export const emailDraft = asyncHandler(async (req, res) => {
+  res.json(await invoiceService.emailDraft(req.auth, req.params.id));
+});
+
 // POST /api/invoices/:id/void
 export const voidInvoice = asyncHandler(async (req, res) => {
   res.json(await invoiceService.voidInvoice(req.auth, req.params.id));

@@ -213,3 +213,8 @@ export async function markVoid(id, when, db = pool) {
 export async function remove(orgId, id, db = pool) {
   await db.query('DELETE FROM invoices WHERE organization_id = ? AND id = ?', [orgId, id]);
 }
+
+// The customer's view-and-accept link (made the first time it's needed)
+export async function setPublicToken(id, token, db = pool) {
+  await db.query('UPDATE invoices SET public_token = COALESCE(public_token, ?) WHERE id = ?', [token, id]);
+}

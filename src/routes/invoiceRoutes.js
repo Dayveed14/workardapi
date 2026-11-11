@@ -35,6 +35,7 @@ router.get('/:id', view, invoiceController.getOne);
 router.put('/:id', manage, validate(updateInvoiceSchema), invoiceController.update);
 router.delete('/:id', manage, invoiceController.remove);
 router.post('/:id/send', manage, validate(sendInvoiceSchema), invoiceController.send);
+router.get('/:id/email-draft', manage, invoiceController.emailDraft); // "send from my email" (Mail)
 router.post('/:id/void', manage, invoiceController.voidInvoice);
 router.post('/:id/payments', payments, validate(paymentSchema), invoiceController.recordPayment);
 

@@ -23,6 +23,22 @@ process.env.LIVEKIT_URL = 'wss://test.livekit.cloud';
 process.env.LIVEKIT_API_KEY = 'APItestkey';
 process.env.LIVEKIT_API_SECRET = 'test-secret-that-is-long-enough-for-hs256-signing';
 if (!process.env.ENCRYPTION_KEY) process.env.ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+// Mail: fake Google + Microsoft (OAuth and mail APIs), so connecting/sending/inbox need no real accounts
+const { startFakeMail } = await import('./fakeMailProviders.js');
+const fakeMail = startFakeMail();
+Object.assign(process.env, {
+  GOOGLE_CLIENT_ID: 'test-google-client',
+  GOOGLE_CLIENT_SECRET: 'test-google-secret',
+  MICROSOFT_CLIENT_ID: 'test-ms-client',
+  MICROSOFT_CLIENT_SECRET: 'test-ms-secret',
+  MAIL_CALLBACK_BASE: 'http://callback.test',
+  MAIL_GOOGLE_INBOX: 'workspace',
+  MAIL_GOOGLE_AUTH_BASE: fakeMail.url,
+  MAIL_GOOGLE_TOKEN_BASE: fakeMail.url,
+  MAIL_GOOGLE_API_BASE: fakeMail.url,
+  MAIL_MICROSOFT_AUTH_BASE: fakeMail.url,
+  MAIL_MICROSOFT_API_BASE: fakeMail.url,
+});
 
 const { default: app } = await import('../src/app.js');
 const { devOutbox } = await import('../src/services/emailService.js');
@@ -1603,6 +1619,203 @@ try {
   check('HR sets the notice period (e.g. 14 days)', r.data.noticeDays === 14 && (await sup('GET', '/offboarding/mine')).data.noticeDays === 14);
   await hr('PUT', '/offboarding/settings', { noticeDays: 30 });
 
+
+  console.log('\nMail: your own Gmail / Outlook');
+  // "Visit" the sign-in link like a browser, let the fake provider say Allow, follow it back to Workard
+  async function connectMail(who, provider, email, { hd, withInbox = false, deny = false } = {}) {
+    const start = await who('POST', `/mail/connect/${provider}`, { withInbox });
+    if (start.status !== 200) return { start };
+    const url = new URL(start.data.url);
+    url.searchParams.set('login_hint', email);
+    if (hd) url.searchParams.set('fake_hd', hd);
+    if (deny) url.searchParams.set('fake_deny', '1');
+    const atProvider = await fetch(url, { redirect: 'manual' });
+    const callback = new URL(atProvider.headers.get('location'));
+    const callbackPath = `${callback.pathname.replace(/^\/api/, '')}${callback.search}`;
+    const back = await fetch(BASE + callbackPath, { redirect: 'manual' });
+    return { start, callbackPath, location: back.headers.get('location') || '' };
+  }
+  const mailForm = (data, files = []) => {
+    const form = new FormData();
+    form.append('data', JSON.stringify(data));
+    for (const f of files) form.append('files', new Blob([f.content], { type: f.type || 'application/octet-stream' }), f.name);
+    return form;
+  };
+
+  r = await small('GET', '/mail/account');
+  check('Mail is not on the Starter plan', r.status === 403 || r.status === 402, r.data);
+  r = await owner('GET', '/mail/account');
+  check('Mail page: both providers set up, nothing connected yet', r.status === 200 && r.data.providers.google && r.data.providers.microsoft && r.data.account === null, r.data);
+  r = await owner('POST', '/mail/send', mailForm({ to: [{ email: 'x@y.com' }], subject: 'Hi', html: '<p>Hi</p>' }));
+  check('sending before connecting asks you to connect', r.status === 409, r.data);
+
+  const ownerGmail = `ada.${stamp}@gmail.com`;
+  let m = await connectMail(owner, 'google', ownerGmail, { deny: true });
+  check('cancelling at Google comes back with a message', /mailError=/.test(m.location) && /cancelled/.test(decodeURIComponent(m.location)), m.location);
+  m = await connectMail(owner, 'google', ownerGmail);
+  check('connect personal Gmail → back to /mail?connected=google', /\/mail\?connected=google/.test(m.location), m.location);
+  check('Gmail asked only to SEND (no inbox permission for personal Gmail)', !/gmail\.modify/.test(m.start.data.url) && /gmail\.send/.test(m.start.data.url) && /code_challenge=/.test(m.start.data.url), m.start.data.url);
+  const replay = await fetch(BASE + m.callbackPath, { redirect: 'manual' });
+  check('the same sign-in link can’t be used twice', /expired/.test(decodeURIComponent(replay.headers.get('location') || '')), replay.headers.get('location'));
+  r = await owner('GET', '/mail/account');
+  check('connected as the Gmail address; personal Gmail: send only, inbox “coming soon”', r.data.account?.email === ownerGmail && !r.data.inbox.allowed && /personal Gmail/.test(r.data.inbox.reason || ''), r.data);
+  const [[ownerMailRow]] = await pool.query('SELECT refresh_token_enc, access_token_enc FROM mail_accounts WHERE email = ?', [ownerGmail]);
+  check('Gmail tokens are stored encrypted, never as plain text', !/^rt_|^at_/.test(ownerMailRow.refresh_token_enc) && ownerMailRow.refresh_token_enc.split(':').length === 3 && !ownerMailRow.access_token_enc.startsWith('at_'));
+  r = await owner('GET', '/mail/inbox');
+  check('personal Gmail inbox is not readable yet (403)', r.status === 403, r.data);
+
+  // Send: to a customer, cc the supervisor, bcc HR, plus someone outside; one attachment
+  const zenithEmail = `zenith${stamp}@test.ng`;
+  const sendBody = {
+    to: [{ email: zenithEmail, name: 'Zenith Foods' }, { email: 'outsider@example.com' }],
+    cc: [{ email: supEmail }],
+    bcc: [{ email: hrEmail }],
+    subject: 'Your order — délivery update',
+    html: '<p>Hello <strong>Zenith</strong>,</p><p>Your order ships Friday.</p><script>alert(1)</script>',
+    requestId: `mail-${stamp}-1`,
+  };
+  const pdf = { name: 'quote.pdf', type: 'application/pdf', content: Buffer.alloc(10_000, 1) };
+  r = await owner('POST', '/mail/send', mailForm(sendBody, [pdf]));
+  check('email sent through Gmail and recorded', r.status === 201 && r.data.status === 'sent' && r.data.provider === 'google' && r.data.provider_message_id, r.data);
+  const sentId = r.data.id;
+  check('linked to the customer automatically; attachment kept', r.data.customer_id === custA && r.data.attachments.length === 1 && r.data.attachments[0].size_bytes === 10_000, r.data);
+  check('the message is cleaned (no script)', !/script/i.test(r.data.body_html), r.data.body_html);
+  const lastGmail = fakeMail.state.sent.at(-1);
+  check('Gmail received a real email: To, Cc, Bcc, encoded subject, attachment', /zenith/.test(lastGmail.raw) && lastGmail.bcc.includes(hrEmail) && /=\?UTF-8\?B\?/.test(lastGmail.raw) && /filename\*=UTF-8''quote\.pdf/.test(lastGmail.raw), lastGmail.raw.slice(0, 400));
+  const sentCount = fakeMail.state.sent.length;
+  r = await owner('POST', '/mail/send', mailForm(sendBody, [pdf]));
+  check('double click: the same request is sent only once', r.data.duplicate === true && r.data.id === sentId && fakeMail.state.sent.length === sentCount, r.data);
+
+  // Who can see it
+  r = await owner('GET', `/mail/sent/${sentId}`);
+  check('sender sees everyone, including bcc', r.data.recipients.length === 4 && r.data.recipients.some((x) => x.kind === 'bcc'), r.data.recipients);
+  r = await sup('GET', `/mail/sent/${sentId}`);
+  check('cc’d colleague sees it — without the bcc', r.status === 200 && r.data.recipients.length === 3 && !r.data.recipients.some((x) => x.kind === 'bcc'), r.data);
+  r = await hr('GET', `/mail/sent/${sentId}`);
+  check('bcc’d colleague sees it — only their own bcc line', r.status === 200 && r.data.recipients.filter((x) => x.kind === 'bcc').length === 1 && r.data.recipients.find((x) => x.kind === 'bcc').email === hrEmail, r.data.recipients);
+  r = await fin('GET', `/mail/sent/${sentId}`);
+  check('someone not on the email can’t open it (even Finance with all customers)', r.status === 404, r.data);
+  r = await fin('GET', `/mail/sent?customerId=${custA}`);
+  check('…and it isn’t on the customer profile for them', r.data.total === 0, r.data);
+  r = await owner('GET', `/mail/sent?customerId=${custA}`);
+  check('on the customer profile for the sender', r.data.total === 1 && r.data.emails[0].id === sentId, r.data);
+  r = await sup('GET', '/mail/sent?box=received');
+  check('colleague sees it under “sent to me”', r.data.emails.some((e) => e.id === sentId), r.data);
+
+  // Attachments & bad input
+  r = await owner('POST', '/mail/send', mailForm({ ...sendBody, requestId: undefined }, [{ name: 'a.pdf', content: Buffer.alloc(1_600_000) }, { name: 'b.pdf', content: Buffer.alloc(1_600_000) }]));
+  check('attachments over 3 MB in total are refused', r.status === 422 && /3 MB/.test(r.data.message), r.data);
+  r = await owner('POST', '/mail/send', mailForm({ ...sendBody, requestId: undefined }, [{ name: 'big.pdf', content: Buffer.alloc(3_200_000) }]));
+  check('one file over 3 MB is refused', r.status === 422, r.data);
+  r = await owner('POST', '/mail/send', mailForm({ ...sendBody, requestId: undefined }, [{ name: 'setup.exe', content: Buffer.alloc(100) }]));
+  check('program files are blocked', r.status === 422 && /setup\.exe/.test(r.data.message), r.data);
+  r = await owner('POST', '/mail/send', mailForm({ to: [], subject: 'x', html: '<p>x</p>' }));
+  check('an email needs someone in To', r.status === 422, r.data);
+
+  // An expired access token is refreshed quietly
+  const tokenCallsBefore = fakeMail.state.tokenCalls;
+  await pool.query('UPDATE mail_accounts SET access_expires_at = ? WHERE email = ?', [new Date(Date.now() - 60_000), ownerGmail]);
+  r = await owner('POST', '/mail/send', mailForm({ to: [{ email: 'outsider@example.com' }], subject: 'After refresh', html: '<p>ok</p>' }));
+  check('expired access token: a new one is fetched and the email goes', r.status === 201 && fakeMail.state.tokenCalls === tokenCallsBefore + 1, r.data);
+
+  // Access cancelled at Google → "reconnect"
+  fakeMail.revokeAll(ownerGmail);
+  await pool.query('UPDATE mail_accounts SET access_expires_at = ? WHERE email = ?', [new Date(Date.now() - 60_000), ownerGmail]);
+  r = await owner('POST', '/mail/send', mailForm({ to: [{ email: 'outsider@example.com' }], subject: 'Will fail', html: '<p>x</p>' }));
+  check('access cancelled at Google: “please reconnect”', r.status === 409 && /reconnect/i.test(r.data.message), r.data);
+  r = await owner('GET', '/mail/account');
+  check('mailbox shows “needs reconnect”', r.data.account.status === 'needs_reconnect', r.data.account);
+
+  // Google Workspace account: inbox can be turned on (Workspace admin trusts Workard)
+  const ownerWork = `ada@adafashion${stamp}.ng`;
+  m = await connectMail(owner, 'google', ownerWork, { hd: `adafashion${stamp}.ng`, withInbox: true });
+  check('Workspace account with inbox: asks to read too', /gmail\.modify/.test(m.start.data.url) && /connected=google/.test(m.location), m);
+  r = await owner('GET', '/mail/account');
+  check('reconnect replaces the old mailbox; Workspace inbox allowed', r.data.account.email === ownerWork && r.data.account.status === 'active' && r.data.inbox.allowed, r.data);
+  const got = fakeMail.receiveGmail(ownerWork, {
+    from: `Zenith Foods <${zenithEmail}>`,
+    subject: 'Question about invoice',
+    html: '<p>Can you resend?</p><script>steal()</script><img src="https://tracker.test/p.gif" onerror="x()">',
+    attachments: [{ name: 'po.pdf', mimeType: 'application/pdf', data: Buffer.from('PO-123') }],
+  });
+  r = await owner('GET', '/mail/inbox');
+  check('Inbox lists the conversation with a customer chip', r.status === 200 && r.data.threads.some((t) => t.id === got.threadId && t.unread && t.customer?.id === custA), r.data);
+  r = await owner('GET', `/mail/inbox/threads/${got.threadId}`);
+  const msg = r.data.messages?.[0];
+  check('thread opens; received HTML is cleaned (no script, no onerror)', msg && !/script|onerror/i.test(msg.html) && /resend/.test(msg.html) && msg.attachments[0]?.name === 'po.pdf', msg);
+  const att = await fetch(`${BASE}/mail/inbox/messages/${got.messageId}/attachments/${msg.attachments[0].id}?name=po.pdf`, { headers: { Cookie: '' } });
+  check('attachments need a log-in', att.status === 401);
+  r = await owner('POST', `/mail/inbox/threads/${got.threadId}/read`);
+  check('mark as read', r.status === 200, r.data);
+  r = await owner('POST', `/mail/inbox/threads/${got.threadId}/messages/${got.messageId}/reply`, mailForm({ mode: 'reply', to: [{ email: zenithEmail }], html: '<p>Resent — thanks!</p>', requestId: `mail-${stamp}-reply` }));
+  const replyRaw = fakeMail.state.sent.at(-1);
+  check('reply goes in the same Gmail thread with In-Reply-To, “Re:” subject, recorded as a reply', r.status === 201 && r.data.kind === 'reply' && r.data.subject === 'Re: Question about invoice' && replyRaw.threadId === got.threadId && /@sender\.test>/.test(replyRaw.inReplyTo), { data: r.data, replyRaw: replyRaw?.inReplyTo });
+  r = await owner('POST', `/mail/inbox/threads/${got.threadId}/messages/${got.messageId}/reply`, mailForm({ mode: 'forward', to: [{ email: supEmail }], html: '<p>FYI</p>' }));
+  const fwdRaw = fakeMail.state.sent.at(-1).raw;
+  check('forward carries the original attachment', r.status === 201 && r.data.kind === 'forward' && /Fwd:/.test(r.data.subject) && /po\.pdf/.test(fwdRaw), r.data);
+
+  // Microsoft: the supervisor connects Outlook (inbox included), sends to the owner
+  const supOutlook = `sup.${stamp}@outlook.com`;
+  m = await connectMail(sup, 'microsoft', supOutlook);
+  r = await sup('GET', '/mail/account');
+  check('Outlook connected with inbox', /connected=microsoft/.test(m.location) && r.data.account?.provider === 'microsoft' && r.data.inbox.allowed, r.data);
+  r = await sup('POST', '/mail/send', mailForm({ to: [{ email: ownerEmail, name: 'Ada' }], subject: 'Team update', html: '<p>Done</p>' }, [{ name: 'notes.txt', type: 'text/plain', content: Buffer.from('hello') }]));
+  const lastOutlook = fakeMail.state.sent.at(-1);
+  check('sent through Outlook (draft → send) and recorded', r.status === 201 && r.data.provider === 'microsoft' && lastOutlook.provider === 'microsoft' && lastOutlook.attachments.includes('notes.txt'), r.data);
+  r = await owner('GET', '/mail/sent?box=received');
+  check('the owner (a Workard user it went to) sees it', r.data.emails.some((e) => e.subject === 'Team update'), r.data);
+  const out = fakeMail.receiveOutlook(supOutlook, { from: 'client@example.com', subject: 'Site visit', html: '<p>Tuesday?</p>', attachments: [{ name: 'map.png', mimeType: 'image/png', data: Buffer.from('png') }] });
+  r = await sup('GET', '/mail/inbox');
+  check('Outlook inbox lists the conversation', r.data.threads?.some((t) => t.id === out.threadId && t.unread), r.data);
+  r = await sup('GET', `/mail/inbox/threads/${out.threadId}`);
+  check('Outlook thread with attachment', r.data.messages?.[0]?.attachments?.[0]?.name === 'map.png', r.data);
+  r = await sup('POST', `/mail/inbox/threads/${out.threadId}/messages/${out.messageId}/reply`, mailForm({ mode: 'reply_all', to: [{ email: 'client@example.com' }], html: '<p>Tuesday works.</p>' }));
+  const outReply = fakeMail.state.sent.at(-1);
+  check('Outlook reply all stays in the conversation', r.status === 201 && r.data.kind === 'reply_all' && outReply.replyOf === out.messageId && outReply.message.conversationId === out.threadId, { data: r.data, outReply });
+  r = await owner('GET', '/mail/inbox');
+  check('each person only reads their own inbox', !(r.data.threads || []).some((t) => t.id === out.threadId));
+
+  // Invoice: send from my email
+  r = await owner('POST', '/invoices', { customerId: custA, items: [{ description: 'Mail test', quantity: 1, unitPrice: 25000 }] });
+  const mailInvoice = r.data.id;
+  r = await owner('GET', `/invoices/${mailInvoice}/email-draft`);
+  check('invoice email draft: customer, subject and the view link', r.data.to?.[0]?.email === zenithEmail && /Invoice INV-/.test(r.data.subject) && /\/i\//.test(r.data.html), r.data);
+  const draft = r.data;
+  r = await owner('GET', `/invoices/${mailInvoice}`);
+  check('…but the invoice is not marked sent until the email goes', r.data.status === 'draft', r.data.status);
+  r = await owner('POST', '/mail/send', mailForm({ to: draft.to, subject: draft.subject, html: draft.html, invoiceId: mailInvoice, customerId: draft.customerId }));
+  const inv = await owner('GET', `/invoices/${mailInvoice}`);
+  check('sent from my email → invoice marked sent and the email is on it', r.status === 201 && r.data.invoice_id === mailInvoice && inv.data.status === 'sent', { mail: r.data, status: inv.data.status });
+  r = await owner('GET', `/mail/sent?invoiceId=${mailInvoice}`);
+  check('the invoice shows its email', r.data.total === 1, r.data);
+
+  // Templates & signature
+  r = await owner('POST', '/mail/templates', { name: 'Payment reminder', subject: 'Reminder: {invoice number}', bodyHtml: '<p>Dear {contact name}, {amount due} is due {due date}. — {my name}, {company name}. {unknown gap}</p>', isShared: true });
+  const tplId = r.data.id;
+  check('shared template saved', r.status === 201 && r.data.is_shared === 1, r.data);
+  r = await owner('POST', `/mail/templates/${tplId}/fill`, { invoiceId: mailInvoice });
+  check('template gaps filled from the invoice; unknown gaps left as written', r.data.subject?.startsWith('Reminder: INV-') && /₦25,000\.00/.test(r.data.html) && /Ada Fashion House/.test(r.data.html) && /\{unknown gap\}/.test(r.data.html), r.data);
+  r = await sup('GET', '/mail/templates');
+  check('colleagues see shared templates', r.data.some((t) => t.id === tplId), r.data);
+  r = await sup('PUT', `/mail/templates/${tplId}`, { name: 'Hijack', subject: 'x', bodyHtml: '<p>x</p>', isShared: true });
+  check('only its creator can change a template', r.status === 403, r.data);
+  r = await sup('POST', '/mail/templates', { name: 'My private one', subject: 'Hi', bodyHtml: '<p>Hi</p>' });
+  const privateTpl = r.data.id;
+  r = await owner('GET', '/mail/templates');
+  check('personal templates stay personal', !r.data.some((t) => t.id === privateTpl), r.data);
+  r = await owner('PUT', '/mail/account/signature', { signatureHtml: '<p><strong>Ada Okafor</strong><br>CEO</p><script>x()</script>' });
+  check('signature saved and cleaned', r.status === 200 && /Ada Okafor/.test(r.data.account.signatureHtml) && !/script/.test(r.data.account.signatureHtml), r.data.account);
+  r = await owner('POST', '/mail/send', mailForm({ to: [{ email: 'outsider@example.com' }], subject: 'Signed', html: '<p>Body</p>' }));
+  check('the signature is added to new emails', /Body<\/p><p><\/p><p><strong>Ada Okafor/.test(r.data.body_html), r.data.body_html);
+
+  // Disconnect
+  r = await owner('DELETE', '/mail/account');
+  const [[gone]] = await pool.query('SELECT COUNT(*) AS n FROM mail_accounts WHERE email = ?', [ownerWork]);
+  check('disconnect removes the mailbox and its tokens', r.data.account === null && Number(gone.n) === 0, r.data);
+  r = await owner('GET', `/mail/sent/${sentId}`);
+  check('…the record of sent emails stays', r.status === 200 && r.data.id === sentId);
+  await sup('DELETE', '/mail/account');
+
   console.log('\nWorkard super admin');
   const { addAdmin } = await import('../src/services/adminAuthService.js');
   const adminEmail = `admin${stamp}@workard.test`;
@@ -1803,6 +2016,7 @@ try {
   console.log(`\n${passed} passed, ${failed} failed\n`);
   server.close();
   fakePaystack.server.close();
+  fakeMail.server.close();
   await pool.end();
   process.exit(failed ? 1 : 0);
 }

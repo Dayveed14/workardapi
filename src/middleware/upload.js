@@ -39,3 +39,13 @@ function makeUploader(allowed, maxMb) {
 export const uploadDocument = makeUploader(DOCUMENT_TYPES, 10).single('file');
 export const uploadImage = makeUploader(IMAGE_TYPES, 5).single('file');
 export const uploadMaterial = makeUploader(MATERIAL_TYPES, 20).single('file');
+
+// Mail attachments: up to 10 files, 3 MB each (the service also checks 3 MB in TOTAL).
+// Any type except programs — mailService blocks .exe, .js, .bat and the like by name.
+export const uploadMailFiles = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 3 * 1024 * 1024, files: 10 },
+}).array('files', 10);
+
+// Mail "send as a link" for files over the limit (any common document/image type, up to 20 MB)
+export const uploadMailLink = uploadMaterial;

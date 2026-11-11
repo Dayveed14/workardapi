@@ -1390,3 +1390,127 @@ CREATE TABLE IF NOT EXISTS blog_posts (
   UNIQUE KEY uq_blog_slug (slug),
   KEY idx_blog_pub (status, published_at)
 ) ENGINE=InnoDB;
+
+-- ============================================================
+-- MAIL — people send email from their own Gmail / Outlook inside Workard
+-- (V1: connect a mailbox, send + keep a record, read the inbox live where allowed).
+-- Received email is NEVER stored here; the inbox is fetched live from Google/Microsoft.
+-- ============================================================
+
+-- A person's connected mailbox (one per person per company). Tokens are encrypted (ENCRYPTION_KEY).
+CREATE TABLE IF NOT EXISTS mail_accounts (
+  id                 BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id    BIGINT UNSIGNED NOT NULL,
+  user_id            BIGINT UNSIGNED NOT NULL,
+  provider           ENUM('google','microsoft') NOT NULL,
+  email              VARCHAR(190) NOT NULL,
+  display_name       VARCHAR(150) NULL,
+  refresh_token_enc  TEXT NOT NULL,
+  access_token_enc   TEXT NULL,
+  access_expires_at  DATETIME NULL,
+  scopes             VARCHAR(600) NULL,
+  is_workspace       TINYINT(1) NOT NULL DEFAULT 0,   -- Google Workspace (company) account, not @gmail.com
+  can_read           TINYINT(1) NOT NULL DEFAULT 0,   -- read permission was granted (inbox)
+  signature_html     TEXT NULL,
+  status             ENUM('active','needs_reconnect') NOT NULL DEFAULT 'active',
+  last_error         VARCHAR(255) NULL,
+  connected_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_mail_account (organization_id, user_id),
+  CONSTRAINT fk_mailacc_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_mailacc_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- The one-time "Connect" slip: proves the person coming back from Google/Microsoft
+-- is the one who clicked Connect (state + PKCE). Lives 10 minutes, used once.
+CREATE TABLE IF NOT EXISTS mail_oauth_states (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  state_hash       CHAR(64) NOT NULL,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  user_id          BIGINT UNSIGNED NOT NULL,
+  provider         ENUM('google','microsoft') NOT NULL,
+  code_verifier    VARCHAR(128) NOT NULL,
+  with_inbox       TINYINT(1) NOT NULL DEFAULT 0,
+  expires_at       DATETIME NOT NULL,
+  used_at          DATETIME NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_mail_state (state_hash),
+  CONSTRAINT fk_mailstate_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Every email sent from Workard (the record). Linked to a customer / employee / invoice if any.
+-- Seen ONLY by the sender and by Workard users it was sent to (to, cc, or their own bcc).
+CREATE TABLE IF NOT EXISTS sent_emails (
+  id                   BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id      BIGINT UNSIGNED NOT NULL,
+  sender_user_id       BIGINT UNSIGNED NOT NULL,
+  mail_account_id      BIGINT UNSIGNED NULL,
+  provider             ENUM('google','microsoft') NOT NULL,
+  from_email           VARCHAR(190) NOT NULL,
+  from_name            VARCHAR(150) NULL,
+  subject              VARCHAR(300) NOT NULL,
+  body_html            MEDIUMTEXT NOT NULL,
+  body_text            TEXT NULL,
+  customer_id          BIGINT UNSIGNED NULL,
+  employee_id          BIGINT UNSIGNED NULL,
+  invoice_id           BIGINT UNSIGNED NULL,
+  kind                 ENUM('new','reply','reply_all','forward') NOT NULL DEFAULT 'new',
+  provider_message_id  VARCHAR(255) NULL,
+  provider_thread_id   VARCHAR(255) NULL,
+  status               ENUM('sending','sent','failed') NOT NULL DEFAULT 'sending',
+  error                VARCHAR(500) NULL,
+  request_id           VARCHAR(64) NULL,
+  created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  sent_at              DATETIME NULL,
+  UNIQUE KEY uq_sent_email_request (organization_id, request_id),
+  KEY idx_sent_sender (organization_id, sender_user_id, created_at),
+  KEY idx_sent_customer (organization_id, customer_id),
+  KEY idx_sent_employee (organization_id, employee_id),
+  KEY idx_sent_invoice (organization_id, invoice_id),
+  CONSTRAINT fk_sent_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_sent_account FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- Who an email went to. user_id = a Workard user in that company (decides who can see it).
+CREATE TABLE IF NOT EXISTS sent_email_recipients (
+  id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  email_id     BIGINT UNSIGNED NOT NULL,
+  kind         ENUM('to','cc','bcc') NOT NULL,
+  email        VARCHAR(190) NOT NULL,
+  name         VARCHAR(150) NULL,
+  user_id      BIGINT UNSIGNED NULL,
+  customer_id  BIGINT UNSIGNED NULL,
+  employee_id  BIGINT UNSIGNED NULL,
+  KEY idx_rcpt_email (email_id),
+  KEY idx_rcpt_user (user_id),
+  KEY idx_rcpt_customer (customer_id),
+  KEY idx_rcpt_employee (employee_id),
+  CONSTRAINT fk_rcpt_email FOREIGN KEY (email_id) REFERENCES sent_emails(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Files sent with an email (max 3 MB per email); a copy is kept so the record can show them.
+CREATE TABLE IF NOT EXISTS sent_email_attachments (
+  id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  email_id     BIGINT UNSIGNED NOT NULL,
+  file_name    VARCHAR(255) NOT NULL,
+  mime_type    VARCHAR(120) NULL,
+  size_bytes   INT UNSIGNED NOT NULL,
+  file_url     MEDIUMTEXT NULL,
+  public_id    VARCHAR(255) NULL,
+  CONSTRAINT fk_att_email FOREIGN KEY (email_id) REFERENCES sent_emails(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Saved emails ("Payment reminder") with gaps like {customer name}. Personal or shared.
+CREATE TABLE IF NOT EXISTS email_templates (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  organization_id  BIGINT UNSIGNED NOT NULL,
+  created_by       BIGINT UNSIGNED NOT NULL,
+  name             VARCHAR(120) NOT NULL,
+  subject          VARCHAR(300) NOT NULL,
+  body_html        MEDIUMTEXT NOT NULL,
+  is_shared        TINYINT(1) NOT NULL DEFAULT 0,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_tpl_org (organization_id),
+  CONSTRAINT fk_tpl_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+) ENGINE=InnoDB;

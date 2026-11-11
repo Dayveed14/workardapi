@@ -259,3 +259,43 @@ export async function getPublicInvoice(token) {
     acceptance: brandingService.acceptanceOf(acceptance),
   };
 }
+
+// ---------- Sending from the person's own Gmail / Outlook (Mail) ----------
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+// A ready-to-edit email for this invoice. Makes sure the customer link exists, but does NOT
+// mark the invoice sent — that happens only when the email actually goes (markSentByEmail).
+export async function emailDraft(auth, id) {
+  const invoice = await getInvoiceOrFail(auth.orgId, id);
+  if (invoice.status === 'void') throw new AppError(409, 'This invoice has been voided');
+  const token = invoice.public_token || randomToken(16);
+  if (!invoice.public_token) await invoiceModel.setPublicToken(invoice.id, token);
+  const organization = await organizationModel.findById(auth.orgId);
+  const link = `${env.clientUrls[0]}/i/${token}`;
+  const name = invoice.customer_contact || invoice.customer_name;
+  return {
+    invoiceId: invoice.id,
+    customerId: invoice.customer_id,
+    to: invoice.customer_email ? [{ email: invoice.customer_email, name }] : [],
+    subject: `Invoice ${invoice.invoice_number} from ${organization.name}`,
+    html:
+      `<p>Hello ${esc(name)},</p>` +
+      `<p>Please find invoice <strong>${esc(invoice.invoice_number)}</strong> for <strong>${esc(formatNaira(invoice.total_kobo - invoice.amount_paid_kobo))}</strong>, due ${esc(formatDateLong(invoice.due_date))}.</p>` +
+      `<p>You can view and accept it here: <a href="${esc(link)}">${esc(link)}</a></p>` +
+      '<p>Thank you.</p>',
+  };
+}
+
+// Called by mailService once an email linked to this invoice has gone out
+export async function markSentByEmail(orgId, userId, invoiceId) {
+  const invoice = await getInvoiceOrFail(orgId, invoiceId).catch(() => null);
+  if (!invoice || invoice.status === 'void') return;
+  await invoiceModel.markSent(invoice.id, {
+    token: invoice.public_token || randomToken(16),
+    when: new Date(),
+    status: invoice.status === 'draft' ? 'sent' : invoice.status,
+  });
+  const customer = await customerModel.findById(orgId, invoice.customer_id);
+  if (['lead', 'prospect'].includes(customer?.stage)) await customerModel.setStage(orgId, invoice.customer_id, 'customer', userId);
+  await auditModel.log({ orgId, userId, action: 'invoice.sent', entityType: 'invoice', entityId: invoice.id, details: `${invoice.invoice_number} by my email` });
+}

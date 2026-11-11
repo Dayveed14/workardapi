@@ -120,6 +120,26 @@ export const env = Object.freeze({
   // Empty = nothing is called (rebuild by redeploying on Vercel).
   deployHookUrl: str('VERCEL_DEPLOY_HOOK_URL'),
 
+  // Email from your own Gmail / Outlook (Mail page). Each provider is optional:
+  // without its keys, "Connect Google" / "Connect Microsoft" says it isn't set up yet.
+  // Redirect URI to register with Google/Microsoft: <MAIL_CALLBACK_BASE>/api/mail/oauth/<google|microsoft>/callback
+  mail: Object.freeze({
+    callbackBase: stripSlash(str('MAIL_CALLBACK_BASE', str('API_PUBLIC_URL', `http://localhost:${port}`))),
+    google: Object.freeze({ clientId: str('GOOGLE_CLIENT_ID'), clientSecret: str('GOOGLE_CLIENT_SECRET') }),
+    microsoft: Object.freeze({ clientId: str('MICROSOFT_CLIENT_ID'), clientSecret: str('MICROSOFT_CLIENT_SECRET') }),
+    // Reading Gmail needs Google's restricted-scope verification + yearly security assessment.
+    //   off       — Gmail: send only (default)
+    //   workspace — inbox for Google Workspace accounts (their admin trusts Workard); personal Gmail: send only
+    //   all       — inbox for every Gmail account (after the assessment)
+    googleInbox: oneOf('MAIL_GOOGLE_INBOX', ['off', 'workspace', 'all'], 'off'),
+    // Tests point these at fake servers; leave empty in real use
+    googleAuthBase: str('MAIL_GOOGLE_AUTH_BASE', 'https://accounts.google.com'),
+    googleTokenBase: str('MAIL_GOOGLE_TOKEN_BASE', 'https://oauth2.googleapis.com'),
+    googleApiBase: str('MAIL_GOOGLE_API_BASE', 'https://gmail.googleapis.com'),
+    microsoftAuthBase: str('MAIL_MICROSOFT_AUTH_BASE', 'https://login.microsoftonline.com'),
+    microsoftApiBase: str('MAIL_MICROSOFT_API_BASE', 'https://graph.microsoft.com'),
+  }),
+
   cloudinary: Object.freeze({
     cloudName: str('CLOUDINARY_CLOUD_NAME'),
     apiKey: str('CLOUDINARY_API_KEY'),
